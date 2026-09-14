@@ -1,0 +1,19 @@
+[package]
+name = "wgcore"
+version.workspace = true
+edition.workspace = true
+description = "Build WireGuard tunnel configurations programmatically (Rust port of wireguard_manager.py)"
+
+[dependencies]
+base64 = "0.22"
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+sha2 = "0.10"
+ipnet = "2"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"

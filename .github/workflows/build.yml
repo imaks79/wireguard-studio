@@ -1,0 +1,59 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: wireguard-studio-linux
+          - os: macos-latest
+            artifact: wireguard-studio-macos
+          - os: windows-latest
+            artifact: wireguard-studio-windows.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry/build
+        uses: Swatinem/rust-cache@v2
+
+      # eframe's Linux backend links against the system windowing/GL
+      # libraries at build time -- ubuntu-latest doesn't have the dev
+      # headers for these preinstalled. macOS and Windows runners need
+      # nothing extra (they use Cocoa / Win32 + WGL via the OS SDK, which
+      # the runner images already include).
+      - name: Install Linux GUI build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libgtk-3-dev libssl-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libglu1-mesa-dev libgl1-mesa-dev
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Test
+        run: cargo test --release -p wgcore
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/release/wireguard-studio
+            target/release/wireguard-studio.exe
+          if-no-files-found: ignore
