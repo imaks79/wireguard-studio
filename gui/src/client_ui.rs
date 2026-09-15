@@ -200,26 +200,26 @@ impl ClientTabState {
                     }
                 }
 
-                if ui.button("Copy Configuration").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            ui.output_mut(|o| o.copied_text = synced.client_model.full_config());
-                        }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
-                    }
-                }
+                // if ui.button("Copy Configuration").clicked() {
+                //     match self.sync(ctx.host_pubkey, ctx.host_name) {
+                //         Ok(synced) => {
+                //             out.sync_ran = true;
+                //             ui.output_mut(|o| o.copied_text = synced.client_model.full_config());
+                //         }
+                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                //     }
+                // }
 
-                if ui.button("Convert for RouterOS").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            let script = self.build_routeros_script(&synced.client_model, ctx);
-                            ui.output_mut(|o| o.copied_text = script);
-                        }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
-                    }
-                }
+                // if ui.button("Convert for RouterOS").clicked() {
+                //     match self.sync(ctx.host_pubkey, ctx.host_name) {
+                //         Ok(synced) => {
+                //             out.sync_ran = true;
+                //             let script = self.build_routeros_script(&synced.client_model, ctx);
+                //             ui.output_mut(|o| o.copied_text = script);
+                //         }
+                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                //     }
+                // }
 
                 if ui.button("Preview RouterOS Script").clicked() {
                     match self.sync(ctx.host_pubkey, ctx.host_name) {
@@ -259,22 +259,28 @@ impl ClientTabState {
                     }
                 }
 
-                if theme::danger_button(ui, "Remove Client").clicked() {
-                    out.close_requested = true;
-                }
+                // if theme::danger_button(ui, "Remove Client").clicked() {
+                //     out.close_requested = true;
+                // }
             });
         });
 
         out
     }
 
-    fn build_routeros_script(&self, client_model: &wgcore::WireGuardHost, ctx: &ClientCtx<'_>) -> String {
+    fn build_routeros_script(
+        &self,
+        client_model: &wgcore::WireGuardHost,
+        ctx: &ClientCtx<'_>,
+    ) -> String {
         let mut opts = RouterOsOptions::default();
         if let Some(host_addr) = &ctx.host_tunnel_remote {
-            opts.peer_remote_addresses.insert(ctx.host_pubkey.to_string(), host_addr.clone());
+            opts.peer_remote_addresses
+                .insert(ctx.host_pubkey.to_string(), host_addr.clone());
         }
         if let Some(tid) = self.get_tunnel_id() {
-            opts.peer_tunnel_ids.insert(ctx.host_pubkey.to_string(), tid);
+            opts.peer_tunnel_ids
+                .insert(ctx.host_pubkey.to_string(), tid);
         }
         host_to_routeros_script(client_model, &opts)
     }

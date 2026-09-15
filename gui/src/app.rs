@@ -49,11 +49,17 @@ impl WgStudioApp {
     }
 
     fn info(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        self.modal = Some(Modal::Info { title: title.into(), body: body.into() });
+        self.modal = Some(Modal::Info {
+            title: title.into(),
+            body: body.into(),
+        });
     }
 
     fn error(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        self.modal = Some(Modal::Error { title: title.into(), body: body.into() });
+        self.modal = Some(Modal::Error {
+            title: title.into(),
+            body: body.into(),
+        });
     }
 
     // -- Header -----------------------------------------------------------
@@ -128,8 +134,14 @@ impl WgStudioApp {
                 if confirm_close {
                     self.confirm = Some((
                         "Remove client".into(),
-                        format!("Remove client '{}'?", self.hosts[idx].clients[client_idx].name),
-                        PendingConfirm::CloseClient { host_idx: idx, client_idx },
+                        format!(
+                            "Remove client '{}'?",
+                            self.hosts[idx].clients[client_idx].name
+                        ),
+                        PendingConfirm::CloseClient {
+                            host_idx: idx,
+                            client_idx,
+                        },
                     ));
                 } else {
                     self.hosts[idx].close_client_tab(client_idx);
@@ -139,7 +151,10 @@ impl WgStudioApp {
                 if confirm_close {
                     self.confirm = Some((
                         "Close host tab".into(),
-                        format!("Close host '{}' and all its client tabs?", self.hosts[idx].name),
+                        format!(
+                            "Close host '{}' and all its client tabs?",
+                            self.hosts[idx].name
+                        ),
                         PendingConfirm::CloseHost { host_idx: idx },
                     ));
                 } else {
@@ -168,39 +183,54 @@ impl WgStudioApp {
             let mut open = true;
             match &modal {
                 Modal::Info { title, body } => {
-                    egui::Window::new(title.clone()).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                        ui.label(body);
-                        ui.horizontal(|ui| {
-                            if ui.button("OK").clicked() {
-                                self.modal = None;
-                            }
+                    egui::Window::new(title.clone())
+                        .open(&mut open)
+                        .collapsible(false)
+                        .resizable(false)
+                        .show(ctx, |ui| {
+                            ui.label(body);
+                            ui.horizontal(|ui| {
+                                if ui.button("OK").clicked() {
+                                    self.modal = None;
+                                }
+                            });
                         });
-                    });
                 }
                 Modal::Error { title, body } => {
-                    egui::Window::new(format!("⚠ {title}")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                        ui.colored_label(theme::DANGER, body);
-                        ui.horizontal(|ui| {
-                            if ui.button("OK").clicked() {
-                                self.modal = None;
-                            }
+                    egui::Window::new(format!("⚠ {title}"))
+                        .open(&mut open)
+                        .collapsible(false)
+                        .resizable(false)
+                        .show(ctx, |ui| {
+                            ui.colored_label(theme::DANGER, body);
+                            ui.horizontal(|ui| {
+                                if ui.button("OK").clicked() {
+                                    self.modal = None;
+                                }
+                            });
                         });
-                    });
                 }
                 Modal::Preview { title, body } => {
-                    egui::Window::new(title.clone()).open(&mut open).collapsible(false).default_size([640.0, 480.0]).show(ctx, |ui| {
-                        egui::ScrollArea::both().max_height(400.0).show(ui, |ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(body).monospace()).selectable(true));
+                    egui::Window::new(title.clone())
+                        .open(&mut open)
+                        .collapsible(false)
+                        .default_size([640.0, 480.0])
+                        .show(ctx, |ui| {
+                            egui::ScrollArea::both().max_height(400.0).show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(body).monospace())
+                                        .selectable(true),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Copy Configuration").clicked() {
+                                    ui.output_mut(|o| o.copied_text = body.clone());
+                                }
+                                if ui.button("Close").clicked() {
+                                    self.modal = None;
+                                }
+                            });
                         });
-                        ui.horizontal(|ui| {
-                            if ui.button("Copy Configuration").clicked() {
-                                ui.output_mut(|o| o.copied_text = body.clone());
-                            }
-                            if ui.button("Close").clicked() {
-                                self.modal = None;
-                            }
-                        });
-                    });
                 }
             }
             if !open {
@@ -211,17 +241,21 @@ impl WgStudioApp {
         if let Some((title, body, _)) = self.confirm.clone() {
             let mut open = true;
             let mut decision: Option<bool> = None;
-            egui::Window::new(title).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                ui.label(body);
-                ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() {
-                        decision = Some(true);
-                    }
-                    if ui.button("No").clicked() {
-                        decision = Some(false);
-                    }
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(body);
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes").clicked() {
+                            decision = Some(true);
+                        }
+                        if ui.button("No").clicked() {
+                            decision = Some(false);
+                        }
+                    });
                 });
-            });
             if !open {
                 decision = Some(false);
             }
@@ -230,7 +264,10 @@ impl WgStudioApp {
                 if yes {
                     match action {
                         PendingConfirm::CloseHost { host_idx } => self.close_host_tab(host_idx),
-                        PendingConfirm::CloseClient { host_idx, client_idx } => {
+                        PendingConfirm::CloseClient {
+                            host_idx,
+                            client_idx,
+                        } => {
                             if let Some(h) = self.hosts.get_mut(host_idx) {
                                 h.close_client_tab(client_idx);
                             }
@@ -261,8 +298,15 @@ impl WgStudioApp {
             let new_tab = i.consume_key(egui::Modifiers::COMMAND, egui::Key::T);
             let mut number: Option<usize> = None;
             const KEYS: [egui::Key; 9] = [
-                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5,
-                egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+                egui::Key::Num9,
             ];
             for (n, key) in KEYS.into_iter().enumerate() {
                 if i.consume_key(egui::Modifiers::COMMAND, key) {
@@ -287,8 +331,14 @@ impl WgStudioApp {
                     if self.confirm_close {
                         self.confirm = Some((
                             "Remove client".into(),
-                            format!("Remove client '{}'?", self.hosts[idx].clients[client_idx].name),
-                            PendingConfirm::CloseClient { host_idx: idx, client_idx },
+                            format!(
+                                "Remove client '{}'?",
+                                self.hosts[idx].clients[client_idx].name
+                            ),
+                            PendingConfirm::CloseClient {
+                                host_idx: idx,
+                                client_idx,
+                            },
                         ));
                     } else {
                         self.hosts[idx].close_client_tab(client_idx);
@@ -298,7 +348,10 @@ impl WgStudioApp {
                     if self.confirm_close {
                         self.confirm = Some((
                             "Close host tab".into(),
-                            format!("Close host '{}' and all its client tabs?", self.hosts[idx].name),
+                            format!(
+                                "Close host '{}' and all its client tabs?",
+                                self.hosts[idx].name
+                            ),
                             PendingConfirm::CloseHost { host_idx: idx },
                         ));
                     } else {
@@ -312,17 +365,39 @@ impl WgStudioApp {
     // -- Project I/O ----------------------------------------------------
 
     fn open_project(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("WireGuard Studio project", &["json"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("WireGuard Studio project", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) => return self.error("Failed to open project", format!("Could not read this file:\n{e}")),
+            Err(e) => {
+                return self.error(
+                    "Failed to open project",
+                    format!("Could not read this file:\n{e}"),
+                )
+            }
         };
         let data: ProjectFile = match serde_json::from_str(&text) {
             Ok(d) => d,
-            Err(e) => return self.error("Failed to open project", format!("Could not parse this file:\n{e}")),
+            Err(e) => {
+                return self.error(
+                    "Failed to open project",
+                    format!("Could not parse this file:\n{e}"),
+                )
+            }
         };
         self.load_project(data);
-        self.info("Project loaded", format!("Loaded {} host(s) from:\n{}", self.hosts.len(), path.display()));
+        self.info(
+            "Project loaded",
+            format!(
+                "Loaded {} host(s) from:\n{}",
+                self.hosts.len(),
+                path.display()
+            ),
+        );
     }
 
     fn load_project(&mut self, data: ProjectFile) {
@@ -357,7 +432,10 @@ impl WgStudioApp {
             return;
         };
 
-        let project = ProjectFile { version: PROJECT_FORMAT_VERSION, hosts: hosts_dicts };
+        let project = ProjectFile {
+            version: PROJECT_FORMAT_VERSION,
+            hosts: hosts_dicts,
+        };
         let json = match serde_json::to_string_pretty(&project) {
             Ok(j) => j,
             Err(e) => return self.error("Save failed", e.to_string()),

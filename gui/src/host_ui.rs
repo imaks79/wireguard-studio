@@ -22,7 +22,13 @@ impl HostTabState {
 
         // -- sub-tab strip: "Host Settings", one per client, "+" --------
         ui.horizontal_wrapped(|ui| {
-            if ui.selectable_label(matches!(self.selected, HostSubTab::Settings), "Host Settings").clicked() {
+            if ui
+                .selectable_label(
+                    matches!(self.selected, HostSubTab::Settings),
+                    "Host Settings",
+                )
+                .clicked()
+            {
                 self.selected = HostSubTab::Settings;
             }
             for i in 0..self.clients.len() {
@@ -61,13 +67,13 @@ impl HostTabState {
                     ui.label("Private Key:");
                     ui.horizontal(|ui| {
                         ui.add_enabled(self.manual_key, theme::mono(egui::TextEdit::singleline(&mut self.private_key)).desired_width(320.0));
+                        theme::copy_button(ui, &self.private_key);
                         if ui.checkbox(&mut self.manual_key, "Manual entry").changed() && !self.manual_key {
                             self.refresh_public_key();
                         }
                         if ui.button("Generate").clicked() {
                             self.regenerate_key();
                         }
-                        theme::copy_button(ui, &self.private_key);
                     });
                     ui.end_row();
 
@@ -167,19 +173,19 @@ impl HostTabState {
                     }
                 }
 
-                if ui.button("Copy Configuration").clicked() {
-                    match self.build_full_model() {
-                        Ok(host) => ui.output_mut(|o| o.copied_text = host.full_config()),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
-                    }
-                }
+                // if ui.button("Copy Configuration").clicked() {
+                //     match self.build_full_model() {
+                //         Ok(host) => ui.output_mut(|o| o.copied_text = host.full_config()),
+                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                //     }
+                // }
 
-                if ui.button("Convert for RouterOS").clicked() {
-                    match self.build_routeros_script() {
-                        Ok(script) => ui.output_mut(|o| o.copied_text = script),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
-                    }
-                }
+                // if ui.button("Convert for RouterOS").clicked() {
+                //     match self.build_routeros_script() {
+                //         Ok(script) => ui.output_mut(|o| o.copied_text = script),
+                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                //     }
+                // }
 
                 if ui.button("Preview RouterOS Script").clicked() {
                     match self.build_routeros_script() {
@@ -195,9 +201,9 @@ impl HostTabState {
                     }
                 }
 
-                if theme::danger_button(ui, "Close Host Tab").clicked() {
-                    out.close_requested = true;
-                }
+                // if theme::danger_button(ui, "Close Host Tab").clicked() {
+                //     out.close_requested = true;
+                // }
             });
         });
     }
@@ -227,7 +233,8 @@ impl HostTabState {
             host_tunnel_remote,
         };
 
-        let client_out = self.clients[idx].ui(ui, &ctx, || pool.as_mut().and_then(|p| p.allocate().ok()));
+        let client_out =
+            self.clients[idx].ui(ui, &ctx, || pool.as_mut().and_then(|p| p.allocate().ok()));
 
         self.pool_put(pool);
 
@@ -244,7 +251,8 @@ impl HostTabState {
         let mut opts = RouterOsOptions::default();
         for client in &self.clients {
             if let Some(addr) = wgcore::bare_ip_address(&split_csv(&client.address)) {
-                opts.peer_remote_addresses.insert(client.public_key.clone(), addr);
+                opts.peer_remote_addresses
+                    .insert(client.public_key.clone(), addr);
             }
             if let Some(tid) = client.get_tunnel_id() {
                 opts.peer_tunnel_ids.insert(client.public_key.clone(), tid);
