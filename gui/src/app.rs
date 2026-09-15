@@ -91,7 +91,8 @@ impl WgStudioApp {
                         if ui.button("Open Project...").clicked() {
                             self.open_project();
                         }
-                        ui.checkbox(&mut self.confirm_close, "Confirm before closing tabs");
+                        // ui.checkbox(&mut self.confirm_close, "Confirm before closing tabs");
+                        ui.checkbox(&mut self.confirm_close, "");
                     });
                 });
             });
