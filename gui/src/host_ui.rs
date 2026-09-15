@@ -201,9 +201,9 @@ impl HostTabState {
                     }
                 }
 
-                // if theme::danger_button(ui, "Close Host Tab").clicked() {
-                //     out.close_requested = true;
-                // }
+                if theme::danger_button(ui, "Close Host Tab").clicked() {
+                    out.close_requested = true;
+                }
             });
         });
     }

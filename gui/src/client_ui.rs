@@ -259,9 +259,9 @@ impl ClientTabState {
                     }
                 }
 
-                // if theme::danger_button(ui, "Remove Client").clicked() {
-                //     out.close_requested = true;
-                // }
+                if theme::danger_button(ui, "Remove Client").clicked() {
+                    out.close_requested = true;
+                }
             });
         });
 
