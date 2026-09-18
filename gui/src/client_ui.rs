@@ -180,7 +180,7 @@ impl ClientTabState {
                         Ok(synced) => {
                             out.sync_ran = true;
                             if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", synced.client_model.name)).add_filter("WireGuard config", &["conf"]).save_file() {
-                                match std::fs::write(&path, synced.client_model.full_config()) {
+                                match std::fs::write(&path, synced.client_model.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
                                     Ok(_) => out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved to {}", path.display()) }),
                                     Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
                                 }

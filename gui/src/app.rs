@@ -441,7 +441,10 @@ impl WgStudioApp {
             Ok(j) => j,
             Err(e) => return self.error("Save failed", e.to_string()),
         };
-        if let Err(e) = std::fs::write(&path, json) {
+        // The project file contains every host/client's private key in
+        // plaintext, so it needs the same owner-only permissions as an
+        // exported .conf, not just the WireGuardHost::save() path.
+        if let Err(e) = std::fs::write(&path, json).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
             return self.error("Save failed", e.to_string());
         }
         self.info("Saved", format!("Project saved to:\n{}", path.display()));

@@ -195,14 +195,31 @@ impl WireGuardHost {
     }
 }
 
+/// Tighten a just-written file's permissions to owner-read/write only.
+/// Best-effort on non-Unix platforms, where this isn't meaningful for all
+/// filesystems. Public so callers that write private-key-bearing files
+/// directly (e.g. the GUI's own export/save paths) can apply the same
+/// hardening that [`WireGuardHost::save`] applies internally.
+pub fn set_owner_only_permissions(path: &Path) -> Result<()> {
+    imp::set_owner_only_permissions(path)
+}
+
 #[cfg(unix)]
-fn set_owner_only_permissions(path: &Path) -> Result<()> {
+mod imp {
+    use super::*;
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
+
+    pub(super) fn set_owner_only_permissions(path: &Path) -> Result<()> {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
 }
 
 #[cfg(not(unix))]
-fn set_owner_only_permissions(_path: &Path) -> Result<()> {
-    Ok(()) // best-effort; not meaningful on all filesystems/platforms
+mod imp {
+    use super::*;
+
+    pub(super) fn set_owner_only_permissions(_path: &Path) -> Result<()> {
+        Ok(())
+    }
 }
