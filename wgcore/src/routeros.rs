@@ -88,6 +88,23 @@ pub struct RouterOsOptions {
     pub peer_remote_addresses: HashMap<String, String>,
     /// Maps a peer's public_key to the EoIP tunnel-id to use for it.
     pub peer_tunnel_ids: HashMap<String, u32>,
+    /// Public keys of peers whose EoIP tunnel-id must never be silently
+    /// renumbered on a local collision, unlike an ordinary client's.
+    ///
+    /// `eoip_tunnel_id()` is order-independent (it sorts the two public
+    /// keys before hashing), so both ends of a host-to-host mesh link
+    /// always compute the *same* starting id on their own. But each end's
+    /// script is generated independently, and the collision-avoidance
+    /// loop below only knows about tunnel-ids already used *on that one
+    /// host* -- so if host A happens to have some other peer already
+    /// sitting on that id, A's copy gets silently bumped while host B's
+    /// (which has a different set of other peers) doesn't, and the two
+    /// scripts end up disagreeing on the id for what's supposed to be the
+    /// same tunnel. Pinning the mesh side keeps it fixed at the
+    /// deterministic value on both ends; the (safe to change, since only
+    /// one script ever encodes it) client causing the collision is what
+    /// gets flagged instead.
+    pub pinned_tunnel_ids: HashSet<String>,
     pub interface_name: Option<String>,
 }
 
@@ -208,19 +225,31 @@ pub fn host_to_routeros_script(host: &WireGuardHost, opts: &RouterOsOptions) -> 
                 .copied()
                 .unwrap_or_else(|| eoip_tunnel_id(&host.public_key, &peer.public_key));
             let original_id = tunnel_id;
-            let mut attempts = 0;
-            while used_tunnel_ids.contains(&tunnel_id) && attempts < 70000 {
-                tunnel_id = if tunnel_id < 65535 { tunnel_id + 1 } else { 1 };
-                attempts += 1;
+            if opts.pinned_tunnel_ids.contains(&peer.public_key) {
+                if used_tunnel_ids.contains(&tunnel_id) {
+                    eoip_lines.push(format!(
+                        "# WARNING: tunnel-id {tunnel_id} for {label} collides with another peer \
+                         already assigned on this host. It's pinned (the other end of a mesh link \
+                         between hosts, which must use this exact id on both sides) so it was NOT \
+                         auto-adjusted -- give the *other* colliding peer a different tunnel-id \
+                         instead, or this EoIP tunnel won't come up correctly."
+                    ));
+                }
+            } else {
+                let mut attempts = 0;
+                while used_tunnel_ids.contains(&tunnel_id) && attempts < 70000 {
+                    tunnel_id = if tunnel_id < 65535 { tunnel_id + 1 } else { 1 };
+                    attempts += 1;
+                }
+                if tunnel_id != original_id {
+                    eoip_lines.push(format!(
+                        "# NOTE: tunnel-id {original_id} for {label} was already used by another client \
+                         on this host; auto-adjusted to {tunnel_id} to avoid a conflict. If {original_id} \
+                         was meant to be fixed, update the other router to match {tunnel_id} instead."
+                    ));
+                }
             }
             used_tunnel_ids.insert(tunnel_id);
-            if tunnel_id != original_id {
-                eoip_lines.push(format!(
-                    "# NOTE: tunnel-id {original_id} for {label} was already used by another client \
-                     on this host; auto-adjusted to {tunnel_id} to avoid a conflict. If {original_id} \
-                     was meant to be fixed, update the other router to match {tunnel_id} instead."
-                ));
-            }
 
             let eoip_name = format!(
                 "eoip-{}",
@@ -321,4 +350,70 @@ pub fn host_to_routeros_script(host: &WireGuardHost, opts: &RouterOsOptions) -> 
     ));
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::HostOptions;
+    use crate::peer::Peer;
+
+    /// Find the `tunnel-id=` on the one EoIP `add` line whose `comment=`
+    /// contains `label` -- a script can have several EoIP lines (one per
+    /// peer), so grabbing just the first `add name=...` risks silently
+    /// reading a different peer's id than the one under test.
+    fn extract_tunnel_id(script: &str, label: &str) -> u32 {
+        script
+            .lines()
+            .find(|l| l.starts_with("add name=") && l.contains("remote-address=") && l.contains(label))
+            .unwrap_or_else(|| panic!("no EoIP add line mentioning {label:?} in:\n{script}"))
+            .split("tunnel-id=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .expect("matched line should contain a tunnel-id")
+            .parse()
+            .unwrap()
+    }
+
+    /// A mesh link's EoIP id must come out identical from both hosts'
+    /// independently-generated scripts, even when one host's *other*
+    /// peers happen to already occupy that exact id -- that's exactly the
+    /// scenario `pinned_tunnel_ids` exists to protect against (see its doc
+    /// comment): without it, only the colliding side gets silently
+    /// bumped, and the two scripts end up disagreeing on the id.
+    #[test]
+    fn mesh_eoip_tunnel_id_agrees_on_both_sides_despite_a_local_collision() {
+        let host_a = WireGuardHost::new("host-a", HostOptions { address: vec!["172.16.1.1/24".into()], ..Default::default() }).unwrap();
+        let host_b = WireGuardHost::new("host-b", HostOptions { address: vec!["172.16.2.1/24".into()], ..Default::default() }).unwrap();
+        let base_id = eoip_tunnel_id(&host_a.public_key, &host_b.public_key);
+
+        // Host A's script: an ordinary client peer deliberately pinned (via
+        // peer_tunnel_ids, exactly as a user-set Tunnel ID field would be)
+        // to the same id the mesh link would also land on, plus the mesh
+        // peer for host B itself.
+        let mut a = host_a.clone();
+        let colliding_client_pubkey = WireGuardHost::simple("some-client").unwrap().public_key;
+        a.add_peer(Peer::build(colliding_client_pubkey.clone(), vec!["172.16.1.5/32".into()], None, None, None, Some("some-client".into())).unwrap());
+        a.add_peer(Peer::build(host_b.public_key.clone(), host_b.address.clone(), None, Some(25), None, Some("Mesh — host-b".into())).unwrap());
+
+        let mut opts_a = RouterOsOptions::default();
+        opts_a.peer_tunnel_ids.insert(colliding_client_pubkey, base_id);
+        opts_a.peer_remote_addresses.insert(host_b.public_key.clone(), "172.16.2.1".into());
+        opts_a.pinned_tunnel_ids.insert(host_b.public_key.clone());
+        let script_a = host_to_routeros_script(&a, &opts_a);
+
+        // Host B's script: nothing else competing for the id, just the
+        // mesh peer for host A.
+        let mut b = host_b.clone();
+        b.add_peer(Peer::build(host_a.public_key.clone(), host_a.address.clone(), None, Some(25), None, Some("Mesh — host-a".into())).unwrap());
+
+        let mut opts_b = RouterOsOptions::default();
+        opts_b.peer_remote_addresses.insert(host_a.public_key.clone(), "172.16.1.1".into());
+        opts_b.pinned_tunnel_ids.insert(host_a.public_key.clone());
+        let script_b = host_to_routeros_script(&b, &opts_b);
+
+        assert_eq!(extract_tunnel_id(&script_a, "Mesh"), base_id, "pinned mesh id must not be bumped by the colliding client");
+        assert_eq!(extract_tunnel_id(&script_b, "Mesh"), base_id);
+        assert!(script_a.contains("WARNING: tunnel-id"), "the collision should still be flagged instead of silently resolved");
+    }
 }

@@ -78,3 +78,14 @@ pub fn parse_ip_or_network(v: &str) -> std::result::Result<ipnet::IpNet, String>
         .map(ipnet::IpNet::from)
         .map_err(|e| e.to_string())
 }
+
+/// Whether any entry of `a` overlaps any entry of `b` -- e.g. to catch two
+/// hosts whose `Address` ranges would conflict as WireGuard peers of each
+/// other, since a single interface can't have two peers with overlapping
+/// `AllowedIPs`. Entries that fail to parse are silently skipped; that's
+/// the field's own validation's job, not this check's.
+pub fn address_lists_overlap(a: &[String], b: &[String]) -> bool {
+    let a: Vec<ipnet::IpNet> = a.iter().filter_map(|v| parse_ip_or_network(v).ok()).collect();
+    let b: Vec<ipnet::IpNet> = b.iter().filter_map(|v| parse_ip_or_network(v).ok()).collect();
+    a.iter().any(|x| b.iter().any(|y| x.contains(y) || y.contains(x)))
+}

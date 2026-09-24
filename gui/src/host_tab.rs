@@ -1,5 +1,6 @@
 use wgcore::{
-    generate_private_key, public_key_from_private, HostOptions, IpAddressPool, WireGuardHost,
+    address_lists_overlap, generate_private_key, public_key_from_private, HostOptions,
+    IpAddressPool, WireGuardHost,
 };
 
 use crate::client_tab::ClientTabState;
@@ -12,6 +13,82 @@ use crate::util::{parse_u32, resolve_listen_port, split_csv, split_lines};
 pub enum HostSubTab {
     Settings,
     Client(usize),
+}
+
+/// One other host to add as a `[Peer]` block when "Mesh hosts together" is
+/// enabled, so every host reaches every other host directly instead of
+/// only being reachable through the star of its own clients. Mirrors the
+/// netbird idea of a full mesh between nodes, applied here at the host
+/// (hub) level rather than to individual clients.
+#[derive(Clone)]
+pub struct MeshPeerInfo {
+    pub name: String,
+    pub public_key: String,
+    pub allowed_ips: Vec<String>,
+    pub endpoint: Option<String>,
+}
+
+/// When mesh peers are in play, checks `own_address` (this host's own
+/// `Address` field, already split) against every entry in `mesh_peers`,
+/// and every pair of mesh peers against each other -- since a peer of
+/// *this* host having two other hosts with overlapping subnets is just as
+/// much a conflict in this host's `[Peer]` table as this host's own
+/// address overlapping one of them. Returns a human-readable description
+/// of the first conflict found, or `None` if there isn't one.
+pub fn find_mesh_address_conflict(own_address: &[String], mesh_peers: &[MeshPeerInfo]) -> Option<String> {
+    for peer in mesh_peers {
+        if address_lists_overlap(own_address, &peer.allowed_ips) {
+            return Some(format!("this host's Address overlaps '{}'s", peer.name));
+        }
+    }
+    for i in 0..mesh_peers.len() {
+        for j in (i + 1)..mesh_peers.len() {
+            if address_lists_overlap(&mesh_peers[i].allowed_ips, &mesh_peers[j].allowed_ips) {
+                return Some(format!("'{}' and '{}' have overlapping addresses", mesh_peers[i].name, mesh_peers[j].name));
+            }
+        }
+    }
+    None
+}
+
+/// For host `self_idx` in `hosts`, collect every *other* host that has
+/// enough information to be linked (a public key and at least one
+/// address). Each host's own `Address` field becomes the `AllowedIPs` of
+/// the peer entry other hosts get for it -- the same convention already
+/// used for a client's `AllowedIPs` on the host side -- so meshed hosts
+/// can reach each other's whole subnet, clients included, not just a
+/// single host IP.
+pub fn collect_mesh_peers(hosts: &[HostTabState], self_idx: usize) -> Vec<MeshPeerInfo> {
+    hosts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != self_idx)
+        .filter_map(|(_, other)| {
+            let public_key = other.public_key.trim();
+            if public_key.is_empty() {
+                return None;
+            }
+            let allowed_ips = split_csv(&other.address);
+            if allowed_ips.is_empty() {
+                return None;
+            }
+            let public_ip = other.public_ip.trim();
+            let port = other.listen_port.trim();
+            let endpoint = if !public_ip.is_empty() && !port.is_empty() {
+                Some(format!("{public_ip}:{port}"))
+            } else if !public_ip.is_empty() {
+                Some(public_ip.to_string())
+            } else {
+                None
+            };
+            Some(MeshPeerInfo {
+                name: other.name.clone(),
+                public_key: public_key.to_string(),
+                allowed_ips,
+                endpoint,
+            })
+        })
+        .collect()
 }
 
 /// One WireGuard interface, with a nested set of client tabs. Rust port
@@ -271,8 +348,10 @@ impl HostTabState {
     /// Sync this host and every client tab (clients first, so the host's
     /// peer list reflects each client's latest settings), returning the
     /// fully assembled host including every client folded in as a
-    /// `[Peer]` block.
-    pub fn build_full_model(&mut self) -> Result<WireGuardHost, String> {
+    /// `[Peer]` block. When "Mesh hosts together" is on, `mesh_peers`
+    /// (from [`collect_mesh_peers`]) is folded in too, one `[Peer]` block
+    /// per other host -- pass `&[]` to build a plain star as before.
+    pub fn build_full_model(&mut self, mesh_peers: &[MeshPeerInfo]) -> Result<WireGuardHost, String> {
         let mut host = self.build_interface_model()?;
         let host_pubkey = host.public_key.clone();
         let host_name = host.name.clone();
@@ -283,6 +362,25 @@ impl HostTabState {
         }
         for peer in &self.loaded_peers {
             host.add_peer(peer.clone());
+        }
+        if let Some(conflict) = find_mesh_address_conflict(&split_csv(&self.address), mesh_peers) {
+            return Err(format!(
+                "\"Mesh hosts together\" is on, but {conflict} -- WireGuard peers on the same \
+                 interface can't have overlapping AllowedIPs. Give each host its own, non-overlapping \
+                 Address range, or turn the mesh option off."
+            ));
+        }
+        for mesh_peer in mesh_peers {
+            let peer = wgcore::Peer::build(
+                mesh_peer.public_key.clone(),
+                mesh_peer.allowed_ips.clone(),
+                mesh_peer.endpoint.clone(),
+                Some(25),
+                None,
+                Some(format!("Mesh — {}", mesh_peer.name)),
+            )
+            .map_err(|e| e.to_string())?;
+            host.add_peer(peer);
         }
         Ok(host)
     }

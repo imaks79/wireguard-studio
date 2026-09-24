@@ -24,6 +24,19 @@
 //!   "Save Entire Project" (top toolbar) writes the whole workspace --
 //!   every host, every client, every field -- into a single .json file
 //!   that "Open Project" can load back exactly as it was.
+//!
+//! "Mesh hosts together" (top toolbar): normally every host is its own
+//! independent star (host <-> its clients only). Turning this on also
+//! peers every host directly with every other host, so instead of N
+//! separate stars you get one connected network -- inspired by netbird's
+//! full mesh between nodes. Applies the next time each host's
+//! configuration is generated (Save/Preview/RouterOS).
+//!
+//! "+ EoIP (L2)" (next to it, needs mesh on): the mesh link above is
+//! routed (IP only). This adds a real MikroTik EoIP tunnel for each
+//! meshed host pair in the RouterOS export, bridging raw Ethernet between
+//! them -- one L2 broadcast domain -- on top of that routed link. RouterOS
+//! export only; the plain .conf export has no such concept.
 
 mod app;
 mod client_tab;

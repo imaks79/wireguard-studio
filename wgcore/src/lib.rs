@@ -31,7 +31,7 @@ mod routeros;
 pub use dict::{host_from_dict, host_to_dict, HostDict};
 pub use error::{Result, WgError};
 pub use host::{set_owner_only_permissions, HostOptions, WireGuardHost};
-pub use keys::{generate_preshared_key, generate_private_key, public_key_from_private, validate_key};
+pub use keys::{address_lists_overlap, generate_preshared_key, generate_private_key, public_key_from_private, validate_key};
 pub use network::WireGuardNetwork;
 pub use parse::load_host_from_config;
 pub use peer::Peer;

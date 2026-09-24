@@ -9,6 +9,16 @@ pub const PROJECT_FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectFile {
     pub version: u32,
+    /// "Create mesh between nodes": whether hosts should also be peered
+    /// directly with each other (full mesh) in addition to their own
+    /// clients. Absent in projects saved before this option existed.
+    #[serde(default)]
+    pub mesh_hosts: bool,
+    /// "+ EoIP (L2) between them": whether the RouterOS export should also
+    /// bridge each meshed host pair over EoIP. Absent in projects saved
+    /// before this option existed.
+    #[serde(default)]
+    pub mesh_eoip: bool,
     pub hosts: Vec<HostProjectDict>,
 }
 

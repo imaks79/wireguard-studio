@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::client_ui::ClientCtx;
-use crate::host_tab::{HostSubTab, HostTabState};
+use crate::host_tab::{HostSubTab, HostTabState, MeshPeerInfo};
 use crate::modal::Modal;
 use crate::theme;
 use crate::util::split_csv;
@@ -17,7 +17,7 @@ pub struct HostUiOutcome {
 }
 
 impl HostTabState {
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> HostUiOutcome {
+    pub fn ui(&mut self, ui: &mut egui::Ui, mesh_peers: &[MeshPeerInfo], mesh_eoip: bool) -> HostUiOutcome {
         let mut out = HostUiOutcome::default();
 
         // -- sub-tab strip: "Host Settings", one per client, "+" --------
@@ -45,7 +45,7 @@ impl HostTabState {
         ui.separator();
 
         match self.selected {
-            HostSubTab::Settings => self.ui_settings(ui, &mut out),
+            HostSubTab::Settings => self.ui_settings(ui, &mut out, mesh_peers, mesh_eoip),
             HostSubTab::Client(i) if i < self.clients.len() => self.ui_client(ui, i, &mut out),
             _ => self.selected = HostSubTab::Settings,
         }
@@ -53,7 +53,7 @@ impl HostTabState {
         out
     }
 
-    fn ui_settings(&mut self, ui: &mut egui::Ui, out: &mut HostUiOutcome) {
+    fn ui_settings(&mut self, ui: &mut egui::Ui, out: &mut HostUiOutcome, mesh_peers: &[MeshPeerInfo], mesh_eoip: bool) {
         egui::ScrollArea::vertical().id_source(("host-scroll", self.id)).show(ui, |ui| {
             ui.group(|ui| {
                 ui.colored_label(theme::ACCENT_DARK, egui::RichText::new("Host — [Interface]").strong());
@@ -153,7 +153,7 @@ impl HostTabState {
                 }
 
                 if ui.button("Save Configuration...").clicked() {
-                    match self.build_full_model() {
+                    match self.build_full_model(mesh_peers) {
                         Ok(host) => {
                             if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", host.name)).add_filter("WireGuard config", &["conf"]).save_file() {
                                 match std::fs::write(&path, host.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
@@ -167,28 +167,28 @@ impl HostTabState {
                 }
 
                 if ui.button("Preview Configuration").clicked() {
-                    match self.build_full_model() {
+                    match self.build_full_model(mesh_peers) {
                         Ok(host) => out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", host.name), body: host.full_config() }),
                         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                     }
                 }
 
                 // if ui.button("Copy Configuration").clicked() {
-                //     match self.build_full_model() {
+                //     match self.build_full_model(mesh_peers) {
                 //         Ok(host) => ui.output_mut(|o| o.copied_text = host.full_config()),
                 //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                 //     }
                 // }
 
                 // if ui.button("Convert for RouterOS").clicked() {
-                //     match self.build_routeros_script() {
+                //     match self.build_routeros_script(mesh_peers) {
                 //         Ok(script) => ui.output_mut(|o| o.copied_text = script),
                 //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                 //     }
                 // }
 
                 if ui.button("Preview RouterOS Script").clicked() {
-                    match self.build_routeros_script() {
+                    match self.build_routeros_script(mesh_peers, mesh_eoip) {
                         Ok(script) => out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", self.name), body: script }),
                         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                     }
@@ -205,6 +205,16 @@ impl HostTabState {
                     out.close_requested = true;
                 }
             });
+
+            if !mesh_peers.is_empty() {
+                let names = mesh_peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+                let eoip_note = if mesh_eoip { " The RouterOS export will also bridge each of those links over EoIP (L2)." } else { "" };
+                theme::hint(ui, &format!("Mesh hosts together is on: this host will also peer directly with {names}.{eoip_note}"));
+
+                if let Some(conflict) = crate::host_tab::find_mesh_address_conflict(&split_csv(&self.address), mesh_peers) {
+                    ui.colored_label(theme::DANGER, format!("⚠ Address conflict: {conflict} -- give each host a distinct, non-overlapping Address range or Save/Preview will refuse to build this config."));
+                }
+            }
         });
     }
 
@@ -246,8 +256,8 @@ impl HostTabState {
         }
     }
 
-    fn build_routeros_script(&mut self) -> Result<String, String> {
-        let host = self.build_full_model()?;
+    fn build_routeros_script(&mut self, mesh_peers: &[MeshPeerInfo], mesh_eoip: bool) -> Result<String, String> {
+        let host = self.build_full_model(mesh_peers)?;
         let mut opts = RouterOsOptions::default();
         for client in &self.clients {
             if let Some(addr) = wgcore::bare_ip_address(&split_csv(&client.address)) {
@@ -256,6 +266,29 @@ impl HostTabState {
             }
             if let Some(tid) = client.get_tunnel_id() {
                 opts.peer_tunnel_ids.insert(client.public_key.clone(), tid);
+            }
+        }
+        if mesh_eoip {
+            // A mesh peer's AllowedIPs is the other host's whole Address
+            // CIDR (e.g. "172.16.1.1/24"), not a lone /32, so the
+            // EoIP-eligibility check in `host_to_routeros_script`
+            // (`single_ip_address`, which requires exactly one /32/128)
+            // would otherwise skip it. Supplying the bare host IP here
+            // directly overrides that, giving each meshed host pair a
+            // real point-to-point EoIP tunnel -- an L2 bridge riding on
+            // top of the routed WireGuard link -- in addition to the
+            // static route `host_to_routeros_script` already generates
+            // from the same peer's AllowedIPs.
+            for peer in mesh_peers {
+                if let Some(addr) = wgcore::bare_ip_address(&peer.allowed_ips) {
+                    opts.peer_remote_addresses.insert(peer.public_key.clone(), addr);
+                }
+                // This host and the other end of the mesh link generate
+                // their EoIP tunnel-id independently (see
+                // `pinned_tunnel_ids`'s doc comment) -- pin it so neither
+                // side's local collision-avoidance can silently renumber
+                // it out of sync with the other.
+                opts.pinned_tunnel_ids.insert(peer.public_key.clone());
             }
         }
         Ok(wgcore::host_to_routeros_script(&host, &opts))
