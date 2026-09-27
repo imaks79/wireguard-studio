@@ -3,6 +3,7 @@ use wgcore::{
     WireGuardHost,
 };
 
+use crate::deploy::DeployState;
 use crate::host_tab::MeshPeerInfo;
 use crate::project::ClientProjectDict;
 use crate::util::{parse_u32, resolve_listen_port, split_csv};
@@ -42,6 +43,9 @@ pub struct ClientTabState {
     /// client that only ever dials out to its host. Blank keeps the old
     /// behavior of letting the OS pick an ephemeral port.
     pub listen_port: String,
+
+    /// "Apply to Device..." state for this client's own generated config.
+    pub deploy: DeployState,
 }
 
 /// Output of [`ClientTabState::sync`]: the client's own full config, plus
@@ -86,6 +90,7 @@ impl ClientTabState {
             advanced: false,
             public_ip: String::new(),
             listen_port: String::new(),
+            deploy: DeployState::default(),
         }
     }
 
@@ -375,6 +380,7 @@ impl ClientTabState {
             preshared_key: if self.psk.is_empty() { None } else { Some(self.psk.clone()) },
             tunnel_id: self.get_tunnel_id(),
             tunnel_id_manual: self.tunnel_id_manual,
+            deploy: self.deploy.to_project_dict(),
         }
     }
 
@@ -406,6 +412,7 @@ impl ClientTabState {
             s.tunnel_id = tid.to_string();
         }
         s.tunnel_id_manual = d.tunnel_id_manual;
+        s.deploy = DeployState::from_project_dict(&d.deploy);
         s.refresh_advanced_lock();
         s
     }

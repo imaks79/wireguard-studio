@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::client_tab::ClientTabState;
+use crate::deploy::{self, DeviceType};
 use crate::host_tab::MeshPeerInfo;
 use crate::modal::Modal;
 use crate::theme::{self, TEXT_MUTED};
@@ -190,138 +191,189 @@ impl ClientTabState {
             ui.colored_label(TEXT_MUTED, "Note: opening a config here applies it to THIS tab, replacing its current settings.");
             ui.add_space(4.0);
 
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Open Client Config...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
-                        match std::fs::read_to_string(&path) {
-                            Ok(text) => {
-                                let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| self.name.clone());
-                                match wgcore::load_host_from_config(&text, &name) {
-                                    Ok(host) => {
-                                        // Mirrors `_load_from_client()`: the
-                                        // Tunnel ID field belongs to this
-                                        // tab, not to the file being
-                                        // opened, so it rides through
-                                        // unchanged rather than resetting
-                                        // to this fresh tab's default of 1.
-                                        let tunnel_id = self.tunnel_id.clone();
-                                        let tunnel_id_manual = self.tunnel_id_manual;
-                                        *self = ClientTabState::from_loaded_host(self.id, &host);
-                                        self.tunnel_id = tunnel_id;
-                                        self.tunnel_id_manual = tunnel_id_manual;
-                                        out.modal = Some(Modal::Info { title: "Loaded".into(), body: format!("Loaded '{}'.", path.display()) });
+            ui.horizontal(|ui| {
+                theme::button_column(ui, "File", |ui| {
+                    if ui.button("Open Client Config...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
+                            match std::fs::read_to_string(&path) {
+                                Ok(text) => {
+                                    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| self.name.clone());
+                                    match wgcore::load_host_from_config(&text, &name) {
+                                        Ok(host) => {
+                                            // Mirrors `_load_from_client()`: the
+                                            // Tunnel ID field belongs to this
+                                            // tab, not to the file being
+                                            // opened, so it rides through
+                                            // unchanged rather than resetting
+                                            // to this fresh tab's default of 1.
+                                            let tunnel_id = self.tunnel_id.clone();
+                                            let tunnel_id_manual = self.tunnel_id_manual;
+                                            *self = ClientTabState::from_loaded_host(self.id, &host);
+                                            self.tunnel_id = tunnel_id;
+                                            self.tunnel_id_manual = tunnel_id_manual;
+                                            out.modal = Some(Modal::Info { title: "Loaded".into(), body: format!("Loaded '{}'.", path.display()) });
+                                        }
+                                        Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
                                     }
-                                    Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
                                 }
-                            }
-                            Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
-                        }
-                    }
-                }
-
-                if ui.button("Save Configuration...").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", synced.client_model.name)).add_filter("WireGuard config", &["conf"]).save_file() {
-                                match std::fs::write(&path, synced.client_model.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
-                                    Ok(_) => out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved to {}", path.display()) }),
-                                    Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
-                                }
+                                Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
                             }
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
-                }
 
-                if ui.button("Preview Configuration").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", synced.client_model.name), body: synced.client_model.full_config() });
+                    if ui.button("Save Configuration...").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(synced) => {
+                                out.sync_ran = true;
+                                if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", synced.client_model.name)).add_filter("WireGuard config", &["conf"]).save_file() {
+                                    match std::fs::write(&path, synced.client_model.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
+                                        Ok(_) => out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved to {}", path.display()) }),
+                                        Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
+                                    }
+                                }
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
-                }
+                });
 
-                // if ui.button("Copy Configuration").clicked() {
-                //     match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                //         Ok(synced) => {
-                //             out.sync_ran = true;
-                //             ui.output_mut(|o| o.copied_text = synced.client_model.full_config());
-                //         }
-                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
-                //     }
-                // }
-
-                // if ui.button("Convert for RouterOS").clicked() {
-                //     match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                //         Ok(synced) => {
-                //             out.sync_ran = true;
-                //             let script = self.build_routeros_script(&synced.client_model, ctx);
-                //             ui.output_mut(|o| o.copied_text = script);
-                //         }
-                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
-                //     }
-                // }
-
-                if ui.button("Preview RouterOS Script").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            let script = self.build_routeros_script(&synced.client_model, ctx);
-                            out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", synced.client_model.name), body: script });
+                ui.separator();
+                theme::button_column(ui, "Preview", |ui| {
+                    if ui.button("Preview Configuration").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(synced) => {
+                                out.sync_ran = true;
+                                out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", synced.client_model.name), body: synced.client_model.full_config() });
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
-                }
 
-                if ui.button("Preview OpenWrt Configuration").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                        Ok(synced) => {
-                            out.sync_ran = true;
-                            let openwrt_opts = wgcore::OpenWrtOptions {
-                                eoip: ctx.mesh_eoip,
-                                ..Default::default()
-                            };
-                            let script = wgcore::host_to_openwrt_script(&synced.client_model, &openwrt_opts);
-                            out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", synced.client_model.name), body: script });
+                    if ui.button("Preview RouterOS Script").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(synced) => {
+                                out.sync_ran = true;
+                                let script = self.build_routeros_script(&synced.client_model, ctx);
+                                out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", synced.client_model.name), body: script });
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
-                }
 
-                if ui.button("Sync from Host").clicked() {
-                    self.apply_host_defaults(
-                        ctx.host_dns,
-                        ctx.host_mtu,
-                        ctx.host_public_ip,
-                        ctx.host_listen_port,
-                        true,
-                        &mut allocate_address,
-                    );
-                    self.refresh_advanced_lock();
-                    out.modal = Some(Modal::Info {
-                        title: "Synced from host".into(),
-                        body: "DNS, MTU, and Endpoint were refreshed from the host (Address is left as-is to avoid \
-                               wasting pool addresses). Click Apply Changes to save.".into(),
-                    });
-                }
-
-                if ui.button("Apply Changes").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
-                        Ok(_) => {
-                            out.sync_ran = true;
-                            out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) });
+                    if ui.button("Preview OpenWrt Configuration").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(synced) => {
+                                out.sync_ran = true;
+                                let openwrt_opts = wgcore::OpenWrtOptions {
+                                    eoip: ctx.mesh_eoip,
+                                    ..Default::default()
+                                };
+                                let script = wgcore::host_to_openwrt_script(&synced.client_model, &openwrt_opts);
+                                out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", synced.client_model.name), body: script });
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
-                }
 
-                if theme::danger_button(ui, "Remove Client").clicked() {
-                    out.close_requested = true;
-                }
+                    if ui.button("Preview pfSense Configuration").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(synced) => {
+                                out.sync_ran = true;
+                                let script = wgcore::host_to_pfsense_script(&synced.client_model, &wgcore::PfSenseOptions::default());
+                                out.modal = Some(Modal::Preview { title: format!("pfSense Script — {}", synced.client_model.name), body: script });
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                        }
+                    }
+                });
+
+                ui.separator();
+                theme::button_column(ui, "Apply", |ui| {
+                    if ui.button("Sync from Host").clicked() {
+                        self.apply_host_defaults(
+                            ctx.host_dns,
+                            ctx.host_mtu,
+                            ctx.host_public_ip,
+                            ctx.host_listen_port,
+                            true,
+                            &mut allocate_address,
+                        );
+                        self.refresh_advanced_lock();
+                        out.modal = Some(Modal::Info {
+                            title: "Synced from host".into(),
+                            body: "DNS, MTU, and Endpoint were refreshed from the host (Address is left as-is to avoid \
+                                   wasting pool addresses). Click Apply Changes to save.".into(),
+                        });
+                    }
+
+                    if ui.button("Apply Changes").clicked() {
+                        match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                            Ok(_) => {
+                                out.sync_ran = true;
+                                out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) });
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                        }
+                    }
+
+                    if ui.button("Apply to Device...").clicked() {
+                        self.deploy.show_dialog = true;
+                    }
+                    if !self.deploy.log.is_empty() && ui.button("View Log").clicked() {
+                        self.deploy.show_log = true;
+                    }
+                });
+
+                ui.separator();
+                theme::button_column(ui, "", |ui| {
+                    if theme::danger_button(ui, "Remove Client").clicked() {
+                        out.close_requested = true;
+                    }
+                });
             });
+
+            let client_name = self.name.clone();
+            match deploy::render_apply_dialog(ui.ctx(), &mut self.deploy, &client_name) {
+                deploy::DialogAction::None => {}
+                deploy::DialogAction::PlainExport { label } => match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                    Ok(synced) => {
+                        out.sync_ran = true;
+                        let file_stem = crate::util::sanitize_filename_component(&label).unwrap_or_else(|| synced.client_model.name.clone());
+                        if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{file_stem}.conf")).add_filter("WireGuard config", &["conf"]).save_file() {
+                            match std::fs::write(&path, synced.client_model.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
+                                Ok(_) => {
+                                    self.deploy.mark_applied_plain();
+                                    out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved to {}\n\nMarked this tab as applied.", path.display()) });
+                                }
+                                Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
+                            }
+                        }
+                    }
+                    Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                },
+                deploy::DialogAction::Connect { device_type, target } => {
+                    let script = match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                        Ok(synced) => {
+                            out.sync_ran = true;
+                            match device_type {
+                                DeviceType::MikroTik => Ok(self.build_routeros_script(&synced.client_model, ctx)),
+                                DeviceType::OpenWrt => {
+                                    let opts = wgcore::OpenWrtOptions { eoip: ctx.mesh_eoip, ..Default::default() };
+                                    Ok(wgcore::host_to_openwrt_script(&synced.client_model, &opts))
+                                }
+                                DeviceType::PfSense => Ok(wgcore::host_to_pfsense_script(&synced.client_model, &wgcore::PfSenseOptions::default())),
+                                DeviceType::PlainWg => unreachable!("plain WG never reaches the Connect action"),
+                            }
+                        }
+                        Err(e) => Err(e),
+                    };
+                    match script {
+                        Ok(script) => self.deploy.start(target, device_type, script),
+                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                    }
+                }
+            }
+            deploy::render_log_window(ui.ctx(), &mut self.deploy, &client_name);
         });
 
         out

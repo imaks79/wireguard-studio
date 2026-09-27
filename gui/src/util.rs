@@ -57,3 +57,36 @@ pub fn resolve_listen_port(text: &str) -> Result<Option<u16>, String> {
 pub fn random_tunnel_id() -> u32 {
     rand::thread_rng().gen_range(1..=65000)
 }
+
+/// Makes `name` safe to use as a file's base name (e.g. a suggested export
+/// file name built from a free-text "client name" field): strips
+/// characters invalid on common filesystems (`/ \ : * ? " < > |`) and
+/// trims surrounding whitespace/dots. Returns `None` if nothing usable is
+/// left, so the caller can fall back to some other default.
+pub fn sanitize_filename_component(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_filename_component_strips_unsafe_characters() {
+        assert_eq!(sanitize_filename_component("Vasya's laptop"), Some("Vasya's laptop".to_string()));
+        assert_eq!(sanitize_filename_component("Front desk: router"), Some("Front desk_ router".to_string()));
+        assert_eq!(sanitize_filename_component("a/b\\c:d*e?f\"g<h>i|j"), Some("a_b_c_d_e_f_g_h_i_j".to_string()));
+        assert_eq!(sanitize_filename_component("  ..  "), None);
+        assert_eq!(sanitize_filename_component(""), None);
+    }
+}

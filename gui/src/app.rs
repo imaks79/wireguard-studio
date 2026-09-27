@@ -119,11 +119,23 @@ impl WgStudioApp {
     // -- Host tab strip -----------------------------------------------------
 
     fn ui_host_tabs(&mut self, ctx: &egui::Context) {
+        // Drain every host's (and every one of its clients') "Apply to
+        // Device" progress unconditionally, not just the selected one --
+        // see `HostTabState::poll_deploys`'s doc comment for why.
+        for host in &mut self.hosts {
+            if let Some(m) = host.poll_deploys() {
+                self.modal = Some(m);
+            }
+        }
+        if self.hosts.iter().any(|h| h.any_deploy_running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for i in 0..self.hosts.len() {
                     let name = self.hosts[i].name.clone();
-                    if ui.selectable_label(i == self.selected_host, name).clicked() {
+                    if crate::deploy::labeled_tab_button(ui, i == self.selected_host, &name, &self.hosts[i].deploy).clicked() {
                         self.selected_host = i;
                     }
                 }

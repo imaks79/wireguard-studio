@@ -54,6 +54,10 @@ pub struct HostProjectDict {
     /// this option existed.
     #[serde(default)]
     pub mesh_eoip: bool,
+    /// "Apply to Device..." state for this host's own generated config.
+    /// Absent in projects saved before this option existed.
+    #[serde(default)]
+    pub deploy: DeployProjectDict,
     #[serde(default)]
     pub clients: Vec<ClientProjectDict>,
 }
@@ -91,4 +95,52 @@ pub struct ClientProjectDict {
     pub tunnel_id: Option<u32>,
     #[serde(default)]
     pub tunnel_id_manual: bool,
+    /// "Apply to Device..." state for this client's own generated config.
+    /// Absent in projects saved before this option existed.
+    #[serde(default)]
+    pub deploy: DeployProjectDict,
+}
+
+/// "Apply to Device...": SSH target + credentials (stored in plaintext,
+/// same as WireGuard private keys already are -- the whole project file
+/// gets owner-only permissions on save either way) and whether this tab's
+/// config has been successfully applied to a device before. Plain-WG-client
+/// applies never touch SSH at all -- `device_type`/`applied_device_type`
+/// just record which kind of "apply" was last used.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeployProjectDict {
+    /// Free-text human name for whoever/whatever this config is handed
+    /// to ("Vasya's laptop", "Front desk router") -- independent of the
+    /// tab's own WireGuard interface name. Absent in projects saved
+    /// before this option existed.
+    #[serde(default)]
+    pub client_label: String,
+    #[serde(default)]
+    pub device_type: String, // "plain" | "mikrotik" | "openwrt"
+    #[serde(default)]
+    pub target_ip: String,
+    #[serde(default)]
+    pub ssh_port: String,
+    #[serde(default)]
+    pub ssh_username: String,
+    #[serde(default)]
+    pub auth_is_key: bool,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub key_path: Option<String>,
+    #[serde(default)]
+    pub key_passphrase: Option<String>,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub applied_device_type: Option<String>,
+    #[serde(default)]
+    pub applied_ip: String,
+    /// Best-effort results of the last successful "Check Availability".
+    /// Absent in projects saved before this option existed.
+    #[serde(default)]
+    pub checked_model: Option<String>,
+    #[serde(default)]
+    pub checked_serial: Option<String>,
 }

@@ -4,6 +4,8 @@ use wgcore::{
 };
 
 use crate::client_tab::ClientTabState;
+use crate::deploy::DeployState;
+use crate::modal::Modal;
 use crate::project::HostProjectDict;
 use crate::util::{parse_u32, resolve_listen_port, split_csv, split_lines};
 
@@ -120,6 +122,10 @@ pub struct HostTabState {
     /// `mesh_peers_enabled` is on; RouterOS export only.
     pub mesh_eoip: bool,
 
+    /// "Apply to Device..." state for this host itself (its own generated
+    /// config, not its clients' -- each client has its own `deploy` too).
+    pub deploy: DeployState,
+
     pub clients: Vec<ClientTabState>,
     pub selected: HostSubTab,
     client_counter: u32,
@@ -162,6 +168,7 @@ impl HostTabState {
             advanced: false,
             mesh_peers_enabled: false,
             mesh_eoip: false,
+            deploy: DeployState::default(),
             clients: Vec::new(),
             selected: HostSubTab::Settings,
             client_counter: 0,
@@ -174,6 +181,29 @@ impl HostTabState {
     pub fn regenerate_key(&mut self) {
         self.private_key = generate_private_key();
         self.refresh_public_key();
+    }
+
+    /// Drains any pending "Apply to Device" progress for this host and
+    /// every one of its clients, regardless of which sub-tab is currently
+    /// selected -- so a background deploy still finishes (and marks its
+    /// tab green) even if the user switched to a different host or client
+    /// tab while it was running. Call this once per frame, unconditionally,
+    /// for every host in the project.
+    pub fn poll_deploys(&mut self) -> Option<Modal> {
+        let mut out = self.deploy.poll();
+        for client in &mut self.clients {
+            if let Some(m) = client.deploy.poll() {
+                out = Some(m);
+            }
+        }
+        out
+    }
+
+    /// Whether this host or any of its clients has a deploy in flight --
+    /// used to keep the UI repainting on a timer so the log window (and
+    /// the eventual green tab outline) update promptly.
+    pub fn any_deploy_running(&self) -> bool {
+        self.deploy.is_running() || self.clients.iter().any(|c| c.deploy.is_running())
     }
 
     pub fn refresh_public_key(&mut self) {
@@ -441,6 +471,7 @@ impl HostTabState {
             manual_key: self.manual_key,
             mesh_peers_enabled: self.mesh_peers_enabled,
             mesh_eoip: self.mesh_eoip,
+            deploy: self.deploy.to_project_dict(),
             clients: self.clients.iter().map(ClientTabState::to_project_dict).collect(),
         }
     }
@@ -472,6 +503,7 @@ impl HostTabState {
         s.manual_key = d.manual_key;
         s.mesh_peers_enabled = d.mesh_peers_enabled;
         s.mesh_eoip = d.mesh_eoip;
+        s.deploy = DeployState::from_project_dict(&d.deploy);
         s.refresh_advanced_lock();
 
         for (i, cd) in d.clients.iter().enumerate() {

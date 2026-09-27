@@ -26,6 +26,7 @@ mod network;
 mod openwrt;
 mod parse;
 mod peer;
+mod pfsense;
 mod pool;
 mod routeros;
 
@@ -36,6 +37,7 @@ pub use keys::{address_lists_overlap, generate_preshared_key, generate_private_k
 pub use network::WireGuardNetwork;
 pub use openwrt::{host_to_openwrt_script, OpenWrtOptions};
 pub use parse::load_host_from_config;
+pub use pfsense::{host_to_pfsense_script, PfSenseOptions};
 pub use peer::Peer;
 pub use pool::IpAddressPool;
 pub use routeros::{bare_ip_address, host_to_routeros_script, single_ip_address, RouterOsOptions};

@@ -43,10 +43,23 @@
 //! meshed peer pair in their RouterOS export, bridging raw Ethernet
 //! between them -- one L2 broadcast domain -- on top of that routed link.
 //! RouterOS export only; the plain .conf export has no such concept.
+//!
+//! "Apply to Device..." (in a host's or client's own tab, next to the
+//! Preview buttons): goes one step further than generating text -- for a
+//! MikroTik, OpenWrt, or pfSense device it opens an SSH connection to an IP
+//! address you enter (password or private-key auth) and runs the matching
+//! script there directly, with a live "View Log" window; for a plain
+//! WireGuard client it just exports the `.conf` (no SSH round-trip). A tab
+//! whose config was successfully applied is filled solid green with a
+//! hover tooltip naming the device type it was applied to (and, if "Check
+//! Availability" was run, the model/serial number found). See `deploy.rs`
+//! for the implementation and its documented simplifications (no host-key
+//! verification, no config-drift tracking).
 
 mod app;
 mod client_tab;
 mod client_ui;
+mod deploy;
 mod host_tab;
 mod host_ui;
 mod modal;
@@ -59,6 +72,17 @@ fn main() -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1050.0, 760.0])
             .with_title("WireGuard Config Studio"),
+        // eframe defaults this to `true` on macOS/Windows, which makes it
+        // silently re-apply a plain system light/dark `Visuals` (via
+        // `egui::Context::set_visuals`) on top of ours -- at startup, and
+        // again on every OS dark/light toggle while the app is running.
+        // Since our own theme (`theme::apply_theme`) sets very specific
+        // colors (e.g. `override_text_color` for a light background), a
+        // stray system re-apply could leave some widgets' text unreadable
+        // against our backgrounds. We render our own consistent theme
+        // regardless of the OS setting, so system-following is unwanted.
+        follow_system_theme: false,
+        default_theme: eframe::Theme::Light,
         ..Default::default()
     };
     eframe::run_native(

@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::client_ui::ClientCtx;
+use crate::deploy::{self, DeviceType};
 use crate::host_tab::{collect_client_mesh_peers, find_mesh_address_conflict, HostSubTab, HostTabState};
 use crate::modal::Modal;
 use crate::theme;
@@ -20,21 +21,21 @@ impl HostTabState {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> HostUiOutcome {
         let mut out = HostUiOutcome::default();
 
+        // Deploy progress for this host and its clients is drained once
+        // per frame for *every* host in `app.rs::ui_host_tabs`, not here --
+        // see `HostTabState::poll_deploys`'s doc comment for why it must
+        // run regardless of which host/sub-tab is currently selected.
+
         // -- sub-tab strip: "Host Settings", one per client, "+" --------
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_label(
-                    matches!(self.selected, HostSubTab::Settings),
-                    "Host Settings",
-                )
-                .clicked()
-            {
+            let settings_selected = matches!(self.selected, HostSubTab::Settings);
+            if deploy::labeled_tab_button(ui, settings_selected, "Host Settings", &self.deploy).clicked() {
                 self.selected = HostSubTab::Settings;
             }
             for i in 0..self.clients.len() {
                 let selected = matches!(self.selected, HostSubTab::Client(idx) if idx == i);
                 let name = self.clients[i].name.clone();
-                if ui.selectable_label(selected, name).clicked() {
+                if deploy::labeled_tab_button(ui, selected, &name, &self.clients[i].deploy).clicked() {
                     self.selected = HostSubTab::Client(i);
                 }
             }
@@ -155,82 +156,126 @@ impl HostTabState {
             });
 
             ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Load Configuration...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
-                        match std::fs::read_to_string(&path) {
-                            Ok(text) => {
-                                let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| self.name.clone());
-                                match self.load_from_config(&text, &name) {
-                                    Ok(n) => out.modal = Some(Modal::Info { title: "Loaded".into(), body: format!("Loaded '{}' ({n} peer(s) found).", path.display()) }),
-                                    Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e }),
+            ui.horizontal(|ui| {
+                theme::button_column(ui, "File", |ui| {
+                    if ui.button("Load Configuration...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
+                            match std::fs::read_to_string(&path) {
+                                Ok(text) => {
+                                    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| self.name.clone());
+                                    match self.load_from_config(&text, &name) {
+                                        Ok(n) => out.modal = Some(Modal::Info { title: "Loaded".into(), body: format!("Loaded '{}' ({n} peer(s) found).", path.display()) }),
+                                        Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e }),
+                                    }
                                 }
-                            }
-                            Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
-                        }
-                    }
-                }
-
-                if ui.button("Save Configuration...").clicked() {
-                    match self.build_full_model() {
-                        Ok(host) => {
-                            if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", host.name)).add_filter("WireGuard config", &["conf"]).save_file() {
-                                match std::fs::write(&path, host.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
-                                    Ok(_) => out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved '{}' with {} peer(s) to:\n{}", host.name, host.peers.len(), path.display()) }),
-                                    Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
-                                }
+                                Err(e) => out.modal = Some(Modal::Error { title: "Failed to load config".into(), body: e.to_string() }),
                             }
                         }
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                     }
-                }
 
-                if ui.button("Preview Configuration").clicked() {
-                    match self.build_full_model() {
-                        Ok(host) => out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", host.name), body: host.full_config() }),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                    if ui.button("Save Configuration...").clicked() {
+                        match self.build_full_model() {
+                            Ok(host) => {
+                                if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", host.name)).add_filter("WireGuard config", &["conf"]).save_file() {
+                                    match std::fs::write(&path, host.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
+                                        Ok(_) => out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved '{}' with {} peer(s) to:\n{}", host.name, host.peers.len(), path.display()) }),
+                                        Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
+                                    }
+                                }
+                            }
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
                     }
-                }
+                });
 
-                // if ui.button("Copy Configuration").clicked() {
-                //     match self.build_full_model() {
-                //         Ok(host) => ui.output_mut(|o| o.copied_text = host.full_config()),
-                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
-                //     }
-                // }
-
-                // if ui.button("Convert for RouterOS").clicked() {
-                //     match self.build_routeros_script() {
-                //         Ok(script) => ui.output_mut(|o| o.copied_text = script),
-                //         Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
-                //     }
-                // }
-
-                if ui.button("Preview RouterOS Script").clicked() {
-                    match self.build_routeros_script() {
-                        Ok(script) => out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", self.name), body: script }),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                ui.separator();
+                theme::button_column(ui, "Preview", |ui| {
+                    if ui.button("Preview Configuration").clicked() {
+                        match self.build_full_model() {
+                            Ok(host) => out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", host.name), body: host.full_config() }),
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
                     }
-                }
 
-                if ui.button("Preview OpenWrt Configuration").clicked() {
-                    match self.build_openwrt_script() {
-                        Ok(script) => out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", self.name), body: script }),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                    if ui.button("Preview RouterOS Script").clicked() {
+                        match self.build_routeros_script() {
+                            Ok(script) => out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", self.name), body: script }),
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
                     }
-                }
 
-                if ui.button("Apply Changes").clicked() {
-                    match self.build_interface_model() {
-                        Ok(_) => out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) }),
-                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                    if ui.button("Preview OpenWrt Configuration").clicked() {
+                        match self.build_openwrt_script() {
+                            Ok(script) => out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", self.name), body: script }),
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
                     }
-                }
 
-                if theme::danger_button(ui, "Close Host Tab").clicked() {
-                    out.close_requested = true;
-                }
+                    if ui.button("Preview pfSense Configuration").clicked() {
+                        match self.build_pfsense_script() {
+                            Ok(script) => out.modal = Some(Modal::Preview { title: format!("pfSense Script — {}", self.name), body: script }),
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
+                    }
+                });
+
+                ui.separator();
+                theme::button_column(ui, "Apply", |ui| {
+                    if ui.button("Apply Changes").clicked() {
+                        match self.build_interface_model() {
+                            Ok(_) => out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) }),
+                            Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                        }
+                    }
+
+                    if ui.button("Apply to Device...").clicked() {
+                        self.deploy.show_dialog = true;
+                    }
+                    if !self.deploy.log.is_empty() && ui.button("View Log").clicked() {
+                        self.deploy.show_log = true;
+                    }
+                });
+
+                ui.separator();
+                theme::button_column(ui, "", |ui| {
+                    if theme::danger_button(ui, "Close Host Tab").clicked() {
+                        out.close_requested = true;
+                    }
+                });
             });
+
+            let host_name = self.name.clone();
+            match deploy::render_apply_dialog(ui.ctx(), &mut self.deploy, &host_name) {
+                deploy::DialogAction::None => {}
+                deploy::DialogAction::PlainExport { label } => match self.build_full_model() {
+                    Ok(host) => {
+                        let file_stem = crate::util::sanitize_filename_component(&label).unwrap_or_else(|| host.name.clone());
+                        if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{file_stem}.conf")).add_filter("WireGuard config", &["conf"]).save_file() {
+                            match std::fs::write(&path, host.full_config()).and_then(|_| wgcore::set_owner_only_permissions(&path).map_err(std::io::Error::other)) {
+                                Ok(_) => {
+                                    self.deploy.mark_applied_plain();
+                                    out.modal = Some(Modal::Info { title: "Saved".into(), body: format!("Saved '{}' to:\n{}\n\nMarked this tab as applied.", host.name, path.display()) });
+                                }
+                                Err(e) => out.modal = Some(Modal::Error { title: "Save failed".into(), body: e.to_string() }),
+                            }
+                        }
+                    }
+                    Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                },
+                deploy::DialogAction::Connect { device_type, target } => {
+                    let script = match device_type {
+                        DeviceType::MikroTik => self.build_routeros_script(),
+                        DeviceType::OpenWrt => self.build_openwrt_script(),
+                        DeviceType::PfSense => self.build_pfsense_script(),
+                        DeviceType::PlainWg => unreachable!("plain WG never reaches the Connect action"),
+                    };
+                    match script {
+                        Ok(script) => self.deploy.start(target, device_type, script),
+                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
+                    }
+                }
+            }
+            deploy::render_log_window(ui.ctx(), &mut self.deploy, &host_name);
 
             if self.mesh_peers_enabled && !self.clients.is_empty() {
                 let names = self.clients.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
@@ -321,5 +366,10 @@ impl HostTabState {
             ..Default::default()
         };
         Ok(wgcore::host_to_openwrt_script(&host, &opts))
+    }
+
+    fn build_pfsense_script(&mut self) -> Result<String, String> {
+        let host = self.build_full_model()?;
+        Ok(wgcore::host_to_pfsense_script(&host, &wgcore::PfSenseOptions::default()))
     }
 }
