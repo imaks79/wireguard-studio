@@ -3,8 +3,9 @@ use wgcore::{
     WireGuardHost,
 };
 
+use crate::host_tab::MeshPeerInfo;
 use crate::project::ClientProjectDict;
-use crate::util::{parse_u32, split_csv};
+use crate::util::{parse_u32, resolve_listen_port, split_csv};
 
 /// One peer of a host, which is itself a full `WireGuardHost` (its own
 /// `[Interface]` plus one `[Peer]` entry linking back to the host). Rust
@@ -30,6 +31,17 @@ pub struct ClientTabState {
     pub tunnel_id: String,
     pub tunnel_id_manual: bool,
     pub advanced: bool,
+
+    /// This peer's own externally-reachable IP, used only so *other* mesh
+    /// peers of the same host can reach it directly when "Mesh peers
+    /// together" is on. Mirrors a host's `public_ip`, but scoped to this
+    /// one client instead of describing the whole network.
+    pub public_ip: String,
+    /// Fixed listen port to pair with `public_ip`, for the same reason --
+    /// a mesh peer needs a stable port for others to dial, unlike a plain
+    /// client that only ever dials out to its host. Blank keeps the old
+    /// behavior of letting the OS pick an ephemeral port.
+    pub listen_port: String,
 }
 
 /// Output of [`ClientTabState::sync`]: the client's own full config, plus
@@ -72,6 +84,24 @@ impl ClientTabState {
             tunnel_id: default_tunnel_id.to_string(),
             tunnel_id_manual: false,
             advanced: false,
+            public_ip: String::new(),
+            listen_port: String::new(),
+        }
+    }
+
+    /// This client's own address as other mesh peers of the same host
+    /// would reach it: `public_ip:listen_port`, just `public_ip` if no
+    /// port is set, or `None` if it has no public IP at all (it can still
+    /// dial *out* to reach other mesh peers, it just can't be dialed).
+    pub fn mesh_endpoint(&self) -> Option<String> {
+        let ip = self.public_ip.trim();
+        let port = self.listen_port.trim();
+        if !ip.is_empty() && !port.is_empty() {
+            Some(format!("{ip}:{port}"))
+        } else if !ip.is_empty() {
+            Some(ip.to_string())
+        } else {
+            None
         }
     }
 
@@ -91,6 +121,7 @@ impl ClientTabState {
         s.address = host.address.join(", ");
         s.dns = host.dns.join(", ");
         s.mtu = host.mtu.map(|m| m.to_string()).unwrap_or_default();
+        s.listen_port = host.listen_port.map(|p| p.to_string()).unwrap_or_default();
         if let Some(p) = host.peers.first() {
             s.allowed_ips = if p.allowed_ips.is_empty() {
                 "0.0.0.0/0".to_string()
@@ -213,7 +244,12 @@ impl ClientTabState {
     /// Rebuild this client's model from the form: its own `[Interface]`
     /// plus [Peer] entry pointing at the host, and the `[Peer]` entry that
     /// belongs on the *host's* side. Mirrors `ClientTab.sync_to_model()`.
-    pub fn sync(&mut self, host_pubkey: &str, host_name: &str) -> Result<ClientSync, String> {
+    /// When "Mesh peers together" is on for the parent host, `mesh_peers`
+    /// (from [`crate::host_tab::collect_client_mesh_peers`]) adds one more
+    /// `[Peer]` block per sibling client, so this client reaches them
+    /// directly instead of only through the host -- pass `&[]` for the
+    /// plain star as before.
+    pub fn sync(&mut self, host_pubkey: &str, host_name: &str, mesh_peers: &[MeshPeerInfo]) -> Result<ClientSync, String> {
         let name = {
             let n = self.name.trim();
             if n.is_empty() {
@@ -229,6 +265,7 @@ impl ClientTabState {
         };
         let mtu = parse_u32(&self.mtu, "MTU")?;
         let keepalive = parse_u32(&self.keepalive, "Keepalive")?;
+        let listen_port = resolve_listen_port(&self.listen_port)?;
 
         let mut client = WireGuardHost::new(
             &name,
@@ -237,6 +274,7 @@ impl ClientTabState {
                 address: split_csv(&self.address),
                 dns: split_csv(&self.dns),
                 mtu,
+                listen_port,
                 ..Default::default()
             },
         )
@@ -270,6 +308,19 @@ impl ClientTabState {
         )
         .map_err(|e| e.to_string())?;
         client.add_peer(client_peer);
+
+        for mesh_peer in mesh_peers {
+            let peer = Peer::build(
+                mesh_peer.public_key.clone(),
+                mesh_peer.allowed_ips.clone(),
+                mesh_peer.endpoint.clone(),
+                Some(25),
+                None,
+                Some(format!("Mesh — {}", mesh_peer.name)),
+            )
+            .map_err(|e| e.to_string())?;
+            client.add_peer(peer);
+        }
 
         let host_peer_ips = {
             let a = split_csv(&self.address);
@@ -317,6 +368,8 @@ impl ClientTabState {
                 Some(self.endpoint.trim().to_string())
             },
             endpoint_manual: self.endpoint_manual,
+            public_ip: if self.public_ip.trim().is_empty() { None } else { Some(self.public_ip.trim().to_string()) },
+            listen_port: self.listen_port.trim().parse().ok(),
             persistent_keepalive: self.keepalive.trim().parse().ok(),
             use_preshared_key: self.use_psk,
             preshared_key: if self.psk.is_empty() { None } else { Some(self.psk.clone()) },
@@ -334,6 +387,8 @@ impl ClientTabState {
         s.mtu = d.mtu.map(|m| m.to_string()).unwrap_or_default();
         s.manual_key = d.manual_key;
         s.address_manual = true;
+        s.public_ip = d.public_ip.clone().unwrap_or_default();
+        s.listen_port = d.listen_port.map(|p| p.to_string()).unwrap_or_default();
         s.allowed_ips = if d.allowed_ips.is_empty() {
             "0.0.0.0/0".to_string()
         } else {

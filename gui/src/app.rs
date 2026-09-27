@@ -17,19 +17,6 @@ pub struct WgStudioApp {
     selected_host: usize,
     host_counter: u64,
     confirm_close: bool,
-    /// "Create mesh between nodes": when on, every host also gets a
-    /// `[Peer]` block for every *other* host, in addition to its own
-    /// clients -- so instead of N separate stars (one per host), the
-    /// hosts themselves are fully meshed together into one network.
-    /// Inspired by netbird's full-mesh peer topology.
-    mesh_hosts: bool,
-    /// "+ EoIP (L2) between them": on top of `mesh_hosts`'s routed
-    /// WireGuard link, also give each meshed host pair a MikroTik EoIP
-    /// tunnel in the RouterOS export, so raw Ethernet (not just IP) can be
-    /// bridged between them. Only meaningful -- and only shown enabled --
-    /// while `mesh_hosts` is on; RouterOS export only, the plain .conf
-    /// export has no such concept.
-    mesh_eoip: bool,
     modal: Option<Modal>,
     confirm: Option<(String, String, PendingConfirm)>,
     theme_applied: bool,
@@ -42,8 +29,6 @@ impl Default for WgStudioApp {
             selected_host: 0,
             host_counter: 0,
             confirm_close: true,
-            mesh_hosts: false,
-            mesh_eoip: false,
             modal: None,
             confirm: None,
             theme_applied: false,
@@ -123,19 +108,6 @@ impl WgStudioApp {
                         if ui.button("Open Project...").clicked() {
                             self.open_project();
                         }
-                        ui.add_enabled(self.mesh_hosts, egui::Checkbox::new(&mut self.mesh_eoip, "+ EoIP (L2)"))
-                            .on_hover_text(
-                                "Also give each meshed host pair a MikroTik EoIP tunnel in the RouterOS \
-                                 export, bridging raw Ethernet between them (one L2 broadcast domain) on \
-                                 top of the routed WireGuard link. RouterOS export only -- needs \"Mesh \
-                                 hosts together\" on.",
-                            );
-                        ui.checkbox(&mut self.mesh_hosts, "Mesh hosts together")
-                            .on_hover_text(
-                                "Link every host to every other host directly, in addition to each \
-                                 host's own clients -- a full mesh between hosts instead of separate \
-                                 stars. Applies next time you Save/Preview a host's configuration.",
-                            );
                         // ui.checkbox(&mut self.confirm_close, "Confirm before closing tabs");
                         ui.checkbox(&mut self.confirm_close, "");
                     });
@@ -169,12 +141,7 @@ impl WgStudioApp {
             self.selected_host = idx;
 
             let confirm_close = self.confirm_close;
-            let mesh_peers = if self.mesh_hosts {
-                crate::host_tab::collect_mesh_peers(&self.hosts, idx)
-            } else {
-                Vec::new()
-            };
-            let out = self.hosts[idx].ui(ui, &mesh_peers, self.mesh_eoip);
+            let out = self.hosts[idx].ui(ui);
 
             if let Some(m) = out.modal {
                 self.modal = Some(m);
@@ -451,8 +418,6 @@ impl WgStudioApp {
 
     fn load_project(&mut self, data: ProjectFile) {
         self.hosts.clear();
-        self.mesh_hosts = data.mesh_hosts;
-        self.mesh_eoip = data.mesh_eoip;
         for host_dict in &data.hosts {
             self.host_counter += 1;
             let host = HostTabState::from_project_dict(self.host_counter, host_dict);
@@ -469,7 +434,7 @@ impl WgStudioApp {
         for host in &mut self.hosts {
             // Sync every client, then the host, so the saved project
             // reflects the latest form values (mirrors `sync_all`).
-            if let Err(e) = host.build_full_model(&[]) {
+            if let Err(e) = host.build_full_model() {
                 return self.error("Save failed", e);
             }
             hosts_dicts.push(host.to_project_dict());
@@ -485,8 +450,6 @@ impl WgStudioApp {
 
         let project = ProjectFile {
             version: PROJECT_FORMAT_VERSION,
-            mesh_hosts: self.mesh_hosts,
-            mesh_eoip: self.mesh_eoip,
             hosts: hosts_dicts,
         };
         let json = match serde_json::to_string_pretty(&project) {
@@ -505,8 +468,6 @@ impl WgStudioApp {
     fn reset_project(&mut self) {
         self.hosts.clear();
         self.host_counter = 0;
-        self.mesh_hosts = false;
-        self.mesh_eoip = false;
         self.new_host_tab();
     }
 }

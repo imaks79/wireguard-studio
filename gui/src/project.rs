@@ -9,16 +9,6 @@ pub const PROJECT_FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectFile {
     pub version: u32,
-    /// "Create mesh between nodes": whether hosts should also be peered
-    /// directly with each other (full mesh) in addition to their own
-    /// clients. Absent in projects saved before this option existed.
-    #[serde(default)]
-    pub mesh_hosts: bool,
-    /// "+ EoIP (L2) between them": whether the RouterOS export should also
-    /// bridge each meshed host pair over EoIP. Absent in projects saved
-    /// before this option existed.
-    #[serde(default)]
-    pub mesh_eoip: bool,
     pub hosts: Vec<HostProjectDict>,
 }
 
@@ -53,6 +43,17 @@ pub struct HostProjectDict {
     pub public_endpoint: Option<String>,
     #[serde(default)]
     pub manual_key: bool,
+    /// "Mesh peers together": whether this host's own clients/peers should
+    /// also be peered directly with each other (full mesh among them), in
+    /// addition to each one's link back to this host. Absent in projects
+    /// saved before this option existed.
+    #[serde(default)]
+    pub mesh_peers_enabled: bool,
+    /// "+ EoIP (L2) between them": whether each meshed peer pair's RouterOS
+    /// export should also bridge over EoIP. Absent in projects saved before
+    /// this option existed.
+    #[serde(default)]
+    pub mesh_eoip: bool,
     #[serde(default)]
     pub clients: Vec<ClientProjectDict>,
 }
@@ -73,6 +74,16 @@ pub struct ClientProjectDict {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub endpoint_manual: bool,
+    /// This peer's own externally-reachable address, used only so *other*
+    /// mesh peers of the same host can reach it directly. Blank/absent
+    /// means it can't be dialed (it can still dial out to reach others).
+    #[serde(default)]
+    pub public_ip: Option<String>,
+    /// Fixed listen port to pair with `public_ip` for the same reason.
+    /// Blank/absent lets the OS pick an ephemeral port at runtime, same as
+    /// before this field existed.
+    #[serde(default)]
+    pub listen_port: Option<u16>,
     pub persistent_keepalive: Option<u32>,
     #[serde(default)]
     pub use_preshared_key: bool,

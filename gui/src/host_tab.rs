@@ -15,11 +15,13 @@ pub enum HostSubTab {
     Client(usize),
 }
 
-/// One other host to add as a `[Peer]` block when "Mesh hosts together" is
-/// enabled, so every host reaches every other host directly instead of
-/// only being reachable through the star of its own clients. Mirrors the
-/// netbird idea of a full mesh between nodes, applied here at the host
-/// (hub) level rather than to individual clients.
+/// One sibling peer (client) of the same host to add as a `[Peer]` block
+/// when "Mesh peers together" is enabled, so every peer of a host reaches
+/// every other peer of that host directly, in addition to each one's own
+/// link back to the host. Mirrors the netbird idea of a full mesh between
+/// nodes, applied here between a host's own clients rather than between
+/// separate hosts -- every peer effectively also acts as a host that the
+/// others can dial.
 #[derive(Clone)]
 pub struct MeshPeerInfo {
     pub name: String,
@@ -28,17 +30,17 @@ pub struct MeshPeerInfo {
     pub endpoint: Option<String>,
 }
 
-/// When mesh peers are in play, checks `own_address` (this host's own
+/// When mesh peers are in play, checks `own_address` (one peer's own
 /// `Address` field, already split) against every entry in `mesh_peers`,
-/// and every pair of mesh peers against each other -- since a peer of
-/// *this* host having two other hosts with overlapping subnets is just as
-/// much a conflict in this host's `[Peer]` table as this host's own
-/// address overlapping one of them. Returns a human-readable description
-/// of the first conflict found, or `None` if there isn't one.
+/// and every pair of mesh peers against each other -- since two of this
+/// peer's siblings having overlapping addresses is just as much a
+/// conflict in this peer's `[Peer]` table as this peer's own address
+/// overlapping one of them. Returns a human-readable description of the
+/// first conflict found, or `None` if there isn't one.
 pub fn find_mesh_address_conflict(own_address: &[String], mesh_peers: &[MeshPeerInfo]) -> Option<String> {
     for peer in mesh_peers {
         if address_lists_overlap(own_address, &peer.allowed_ips) {
-            return Some(format!("this host's Address overlaps '{}'s", peer.name));
+            return Some(format!("this peer's Address overlaps '{}'s", peer.name));
         }
     }
     for i in 0..mesh_peers.len() {
@@ -51,15 +53,17 @@ pub fn find_mesh_address_conflict(own_address: &[String], mesh_peers: &[MeshPeer
     None
 }
 
-/// For host `self_idx` in `hosts`, collect every *other* host that has
-/// enough information to be linked (a public key and at least one
-/// address). Each host's own `Address` field becomes the `AllowedIPs` of
-/// the peer entry other hosts get for it -- the same convention already
-/// used for a client's `AllowedIPs` on the host side -- so meshed hosts
-/// can reach each other's whole subnet, clients included, not just a
-/// single host IP.
-pub fn collect_mesh_peers(hosts: &[HostTabState], self_idx: usize) -> Vec<MeshPeerInfo> {
-    hosts
+/// For client `self_idx` in `clients` (all belonging to the same host),
+/// collect every *other* client that has enough information to be linked
+/// (a public key and at least one address). Each client's own `Address`
+/// field becomes the `AllowedIPs` of the peer entry its siblings get for
+/// it -- the same convention already used for a client's `AllowedIPs` on
+/// the host side. A client only gets a usable `Endpoint` for its siblings
+/// if it set its own `public_ip` (optionally with a fixed `listen_port`);
+/// otherwise it can still dial *out* to reach the others, it just can't be
+/// dialed itself.
+pub fn collect_client_mesh_peers(clients: &[ClientTabState], self_idx: usize) -> Vec<MeshPeerInfo> {
+    clients
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != self_idx)
@@ -72,20 +76,11 @@ pub fn collect_mesh_peers(hosts: &[HostTabState], self_idx: usize) -> Vec<MeshPe
             if allowed_ips.is_empty() {
                 return None;
             }
-            let public_ip = other.public_ip.trim();
-            let port = other.listen_port.trim();
-            let endpoint = if !public_ip.is_empty() && !port.is_empty() {
-                Some(format!("{public_ip}:{port}"))
-            } else if !public_ip.is_empty() {
-                Some(public_ip.to_string())
-            } else {
-                None
-            };
             Some(MeshPeerInfo {
                 name: other.name.clone(),
                 public_key: public_key.to_string(),
                 allowed_ips,
-                endpoint,
+                endpoint: other.mesh_endpoint(),
             })
         })
         .collect()
@@ -112,6 +107,18 @@ pub struct HostTabState {
     pub post_down: String,
     pub public_ip: String,
     pub advanced: bool,
+
+    /// "Mesh peers together": when on, every client of this host also gets
+    /// a `[Peer]` block for every *other* client of this host, in addition
+    /// to its own link back to the host -- so instead of one star, this
+    /// host's peers form a full mesh among themselves too. Inspired by
+    /// netbird's full-mesh peer topology.
+    pub mesh_peers_enabled: bool,
+    /// "+ EoIP (L2) between them": on top of `mesh_peers_enabled`'s routed
+    /// WireGuard links, also give each meshed peer pair a MikroTik EoIP
+    /// tunnel in their RouterOS export. Only meaningful while
+    /// `mesh_peers_enabled` is on; RouterOS export only.
+    pub mesh_eoip: bool,
 
     pub clients: Vec<ClientTabState>,
     pub selected: HostSubTab,
@@ -153,6 +160,8 @@ impl HostTabState {
             post_down: String::new(),
             public_ip: String::new(),
             advanced: false,
+            mesh_peers_enabled: false,
+            mesh_eoip: false,
             clients: Vec::new(),
             selected: HostSubTab::Settings,
             client_counter: 0,
@@ -348,39 +357,38 @@ impl HostTabState {
     /// Sync this host and every client tab (clients first, so the host's
     /// peer list reflects each client's latest settings), returning the
     /// fully assembled host including every client folded in as a
-    /// `[Peer]` block. When "Mesh hosts together" is on, `mesh_peers`
-    /// (from [`collect_mesh_peers`]) is folded in too, one `[Peer]` block
-    /// per other host -- pass `&[]` to build a plain star as before.
-    pub fn build_full_model(&mut self, mesh_peers: &[MeshPeerInfo]) -> Result<WireGuardHost, String> {
+    /// `[Peer]` block. When "Mesh peers together" is on, each client's own
+    /// model also gets a `[Peer]` block for every *other* client of this
+    /// host (see [`collect_client_mesh_peers`]) -- the host's own peer
+    /// list (this method's return value) is a plain star either way, since
+    /// meshing only adds links *between* peers, not a new kind of link to
+    /// the host itself.
+    pub fn build_full_model(&mut self) -> Result<WireGuardHost, String> {
         let mut host = self.build_interface_model()?;
         let host_pubkey = host.public_key.clone();
         let host_name = host.name.clone();
-        for client in &mut self.clients {
+
+        let mesh_lists: Vec<Vec<MeshPeerInfo>> = if self.mesh_peers_enabled {
+            (0..self.clients.len()).map(|i| collect_client_mesh_peers(&self.clients, i)).collect()
+        } else {
+            vec![Vec::new(); self.clients.len()]
+        };
+
+        for (idx, client) in self.clients.iter_mut().enumerate() {
+            let mesh_peers = &mesh_lists[idx];
+            if let Some(conflict) = find_mesh_address_conflict(&split_csv(&client.address), mesh_peers) {
+                return Err(format!(
+                    "\"Mesh peers together\" is on, but {conflict} -- WireGuard peers on the same \
+                     interface can't have overlapping AllowedIPs. Give each peer its own, non-overlapping \
+                     Address, or turn the mesh option off."
+                ));
+            }
             client.refresh_endpoint(&self.public_ip, &self.listen_port);
-            let synced = client.sync(&host_pubkey, &host_name)?;
+            let synced = client.sync(&host_pubkey, &host_name, mesh_peers)?;
             host.add_peer(synced.host_peer);
         }
         for peer in &self.loaded_peers {
             host.add_peer(peer.clone());
-        }
-        if let Some(conflict) = find_mesh_address_conflict(&split_csv(&self.address), mesh_peers) {
-            return Err(format!(
-                "\"Mesh hosts together\" is on, but {conflict} -- WireGuard peers on the same \
-                 interface can't have overlapping AllowedIPs. Give each host its own, non-overlapping \
-                 Address range, or turn the mesh option off."
-            ));
-        }
-        for mesh_peer in mesh_peers {
-            let peer = wgcore::Peer::build(
-                mesh_peer.public_key.clone(),
-                mesh_peer.allowed_ips.clone(),
-                mesh_peer.endpoint.clone(),
-                Some(25),
-                None,
-                Some(format!("Mesh — {}", mesh_peer.name)),
-            )
-            .map_err(|e| e.to_string())?;
-            host.add_peer(peer);
         }
         Ok(host)
     }
@@ -431,6 +439,8 @@ impl HostTabState {
             public_ip: Some(self.public_ip.clone()),
             public_endpoint: None,
             manual_key: self.manual_key,
+            mesh_peers_enabled: self.mesh_peers_enabled,
+            mesh_eoip: self.mesh_eoip,
             clients: self.clients.iter().map(ClientTabState::to_project_dict).collect(),
         }
     }
@@ -460,6 +470,8 @@ impl HostTabState {
             }
         }
         s.manual_key = d.manual_key;
+        s.mesh_peers_enabled = d.mesh_peers_enabled;
+        s.mesh_eoip = d.mesh_eoip;
         s.refresh_advanced_lock();
 
         for (i, cd) in d.clients.iter().enumerate() {
@@ -467,5 +479,99 @@ impl HostTabState {
         }
         s.client_counter = d.clients.len() as u32;
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client_with_address(id: u64, name: &str, address: &str) -> ClientTabState {
+        let mut c = ClientTabState::new(id, name, 1);
+        c.address = address.to_string();
+        c
+    }
+
+    #[test]
+    fn collect_client_mesh_peers_excludes_self_and_uses_endpoint_only_when_set() {
+        let a = client_with_address(1, "a", "10.0.0.1/32");
+        let mut b = client_with_address(2, "b", "10.0.0.2/32");
+        b.public_ip = "203.0.113.5".to_string();
+        b.listen_port = "51820".to_string();
+        let c = client_with_address(3, "c", "10.0.0.3/32");
+        let clients = vec![a, b, c];
+
+        let peers = collect_client_mesh_peers(&clients, 0);
+        assert_eq!(peers.len(), 2);
+        assert!(peers.iter().all(|p| p.name != "a"));
+
+        let b_peer = peers.iter().find(|p| p.name == "b").unwrap();
+        assert_eq!(b_peer.endpoint.as_deref(), Some("203.0.113.5:51820"));
+        assert_eq!(b_peer.allowed_ips, vec!["10.0.0.2/32".to_string()]);
+
+        let c_peer = peers.iter().find(|p| p.name == "c").unwrap();
+        assert_eq!(c_peer.endpoint, None, "peer with no public_ip must not get an Endpoint");
+    }
+
+    #[test]
+    fn mesh_enabled_client_sync_adds_a_peer_block_per_sibling() {
+        let host = HostTabState::new(1, "host");
+        let clients = vec![
+            client_with_address(1, "a", "10.0.0.1/32"),
+            client_with_address(2, "b", "10.0.0.2/32"),
+        ];
+        let mesh_for_a = collect_client_mesh_peers(&clients, 0);
+
+        let mut a = clients[0].clone();
+        let synced = a.sync(&host.public_key, &host.name, &mesh_for_a).unwrap();
+
+        // One peer back to the host, one peer for the meshed sibling.
+        assert_eq!(synced.client_model.peers.len(), 2);
+        let mesh_peer = synced
+            .client_model
+            .peers
+            .iter()
+            .find(|p| p.public_key == clients[1].public_key)
+            .expect("sibling should be present as a [Peer] block");
+        assert_eq!(mesh_peer.allowed_ips, vec!["10.0.0.2/32".to_string()]);
+        assert_eq!(mesh_peer.persistent_keepalive, Some(25));
+    }
+
+    #[test]
+    fn mesh_disabled_client_sync_has_only_the_host_peer() {
+        let host = HostTabState::new(1, "host");
+        let mut a = client_with_address(1, "a", "10.0.0.1/32");
+        let synced = a.sync(&host.public_key, &host.name, &[]).unwrap();
+        assert_eq!(synced.client_model.peers.len(), 1);
+    }
+
+    #[test]
+    fn build_full_model_keeps_the_host_side_a_plain_star() {
+        let mut host = HostTabState::new(1, "host");
+        host.address = "10.0.0.0/24".to_string();
+        host.mesh_peers_enabled = true;
+        host.new_client_tab(None);
+        host.new_client_tab(None);
+        host.clients[0].address = "10.0.0.11/32".to_string();
+        host.clients[1].address = "10.0.0.12/32".to_string();
+
+        let built = host.build_full_model().expect("mesh build should succeed");
+        // The host's own [Peer] table is unaffected by peer-to-peer mesh --
+        // still exactly one entry per client, same as with mesh off.
+        assert_eq!(built.peers.len(), 2);
+    }
+
+    #[test]
+    fn overlapping_client_addresses_are_rejected_when_meshed() {
+        let mut host = HostTabState::new(1, "host");
+        host.address = "10.0.0.0/24".to_string();
+        host.mesh_peers_enabled = true;
+        host.new_client_tab(None);
+        host.new_client_tab(None);
+        host.clients[0].address = "10.0.0.11/32".to_string();
+        host.clients[1].address = "10.0.0.11/32".to_string();
+
+        let err = host.build_full_model().unwrap_err();
+        assert!(err.contains("overlap"), "unexpected error: {err}");
     }
 }

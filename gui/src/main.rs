@@ -25,18 +25,24 @@
 //!   every host, every client, every field -- into a single .json file
 //!   that "Open Project" can load back exactly as it was.
 //!
-//! "Mesh hosts together" (top toolbar): normally every host is its own
-//! independent star (host <-> its clients only). Turning this on also
-//! peers every host directly with every other host, so instead of N
-//! separate stars you get one connected network -- inspired by netbird's
-//! full mesh between nodes. Applies the next time each host's
-//! configuration is generated (Save/Preview/RouterOS).
+//! "Mesh peers together" (in a host's own Host Settings tab): normally a
+//! host's clients only ever talk to each other through the host (a star).
+//! Turning this on also peers every client of THAT host directly with
+//! every other client of the same host, so its peers form one fully
+//! connected mesh among themselves, in addition to each one's own link
+//! back to the host -- inspired by netbird's full mesh between nodes, just
+//! applied to a host's own peers rather than between separate hosts. A
+//! peer only becomes dialable by its mesh siblings if it sets its own
+//! Public IP (and, for a stable Endpoint, a fixed Listen Port) in its
+//! client tab; otherwise it can still reach them, it just can't be
+//! reached itself. Applies the next time a peer's configuration is
+//! generated (Save/Preview/RouterOS).
 //!
-//! "+ EoIP (L2)" (next to it, needs mesh on): the mesh link above is
+//! "+ EoIP (L2)" (next to it, needs mesh on): each mesh link above is
 //! routed (IP only). This adds a real MikroTik EoIP tunnel for each
-//! meshed host pair in the RouterOS export, bridging raw Ethernet between
-//! them -- one L2 broadcast domain -- on top of that routed link. RouterOS
-//! export only; the plain .conf export has no such concept.
+//! meshed peer pair in their RouterOS export, bridging raw Ethernet
+//! between them -- one L2 broadcast domain -- on top of that routed link.
+//! RouterOS export only; the plain .conf export has no such concept.
 
 mod app;
 mod client_tab;

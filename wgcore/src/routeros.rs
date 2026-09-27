@@ -60,8 +60,10 @@ pub fn bare_ip_address(cidr_list: &[String]) -> Option<String> {
 
 /// A tunnel-id derived from both peers' WireGuard public keys.
 /// Order-independent so generating the script from either side of the
-/// link produces the same id.
-fn eoip_tunnel_id(pubkey_a: &str, pubkey_b: &str) -> u32 {
+/// link produces the same id. `pub(crate)` so [`crate::openwrt`] can reuse
+/// the exact same derivation -- a RouterOS peer and an OpenWrt peer of the
+/// same link need to land on the same id too, not just two RouterOS ends.
+pub(crate) fn eoip_tunnel_id(pubkey_a: &str, pubkey_b: &str) -> u32 {
     let mut pair = [pubkey_a, pubkey_b];
     pair.sort();
     let joined = format!("{}|{}", pair[0], pair[1]);

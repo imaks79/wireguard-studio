@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::client_tab::ClientTabState;
+use crate::host_tab::MeshPeerInfo;
 use crate::modal::Modal;
 use crate::theme::{self, TEXT_MUTED};
 use wgcore::{host_to_routeros_script, RouterOsOptions};
@@ -20,6 +21,15 @@ pub struct ClientCtx<'a> {
     pub host_dns: &'a [String],
     pub host_mtu: Option<u32>,
     pub host_tunnel_remote: Option<String>, // bare IP of the host, for RouterOS EoIP
+    /// Whether "Mesh peers together" is on for the parent host.
+    pub mesh_enabled: bool,
+    /// This client's siblings under the same host, when mesh is on (see
+    /// `collect_client_mesh_peers`) -- empty otherwise, or if this is the
+    /// only client so far.
+    pub mesh_peers: &'a [MeshPeerInfo],
+    /// Whether meshed peer pairs should also get an EoIP tunnel in their
+    /// RouterOS export.
+    pub mesh_eoip: bool,
 }
 
 impl ClientTabState {
@@ -142,6 +152,40 @@ impl ClientTabState {
                                  Public IP + Listen Port unless set manually. Tunnel ID is only used by the RouterOS export.");
             });
 
+            if ctx.mesh_enabled {
+                ui.add_space(6.0);
+                ui.group(|ui| {
+                    ui.colored_label(theme::ACCENT_DARK, egui::RichText::new("Mesh — direct links to this host's other peers").strong());
+
+                    egui::Grid::new(("client-mesh-grid", self.id)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                        ui.label("Public IP Address:");
+                        ui.text_edit_singleline(&mut self.public_ip);
+                        ui.end_row();
+
+                        ui.label("Listen Port:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.listen_port).desired_width(70.0));
+                            if ui.button("Random").clicked() {
+                                self.listen_port = crate::util::generate_random_listen_port().to_string();
+                            }
+                        });
+                        ui.end_row();
+                    });
+
+                    if ctx.mesh_peers.is_empty() {
+                        theme::hint(ui, "\"Mesh peers together\" is on for this host, but there are no other peers yet to mesh with.");
+                    } else {
+                        let names = ctx.mesh_peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+                        let eoip_note = if ctx.mesh_eoip { " Its RouterOS/OpenWrt export will also bridge each of those links over EoIP (L2)." } else { "" };
+                        theme::hint(ui, &format!(
+                            "This peer will connect directly to {names}.{eoip_note} Public IP is optional -- \
+                             set it (and a fixed Listen Port) only if this peer should also be reachable by \
+                             the others; otherwise it can still reach them, it just won't be dialable itself."
+                        ));
+                    }
+                });
+            }
+
             ui.add_space(4.0);
             ui.colored_label(TEXT_MUTED, "Note: opening a config here applies it to THIS tab, replacing its current settings.");
             ui.add_space(4.0);
@@ -176,7 +220,7 @@ impl ClientTabState {
                 }
 
                 if ui.button("Save Configuration...").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
+                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                         Ok(synced) => {
                             out.sync_ran = true;
                             if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", synced.client_model.name)).add_filter("WireGuard config", &["conf"]).save_file() {
@@ -191,7 +235,7 @@ impl ClientTabState {
                 }
 
                 if ui.button("Preview Configuration").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
+                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                         Ok(synced) => {
                             out.sync_ran = true;
                             out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", synced.client_model.name), body: synced.client_model.full_config() });
@@ -201,7 +245,7 @@ impl ClientTabState {
                 }
 
                 // if ui.button("Copy Configuration").clicked() {
-                //     match self.sync(ctx.host_pubkey, ctx.host_name) {
+                //     match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                 //         Ok(synced) => {
                 //             out.sync_ran = true;
                 //             ui.output_mut(|o| o.copied_text = synced.client_model.full_config());
@@ -211,7 +255,7 @@ impl ClientTabState {
                 // }
 
                 // if ui.button("Convert for RouterOS").clicked() {
-                //     match self.sync(ctx.host_pubkey, ctx.host_name) {
+                //     match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                 //         Ok(synced) => {
                 //             out.sync_ran = true;
                 //             let script = self.build_routeros_script(&synced.client_model, ctx);
@@ -222,11 +266,26 @@ impl ClientTabState {
                 // }
 
                 if ui.button("Preview RouterOS Script").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
+                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                         Ok(synced) => {
                             out.sync_ran = true;
                             let script = self.build_routeros_script(&synced.client_model, ctx);
                             out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", synced.client_model.name), body: script });
+                        }
+                        Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
+                    }
+                }
+
+                if ui.button("Preview OpenWrt Configuration").clicked() {
+                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
+                        Ok(synced) => {
+                            out.sync_ran = true;
+                            let openwrt_opts = wgcore::OpenWrtOptions {
+                                eoip: ctx.mesh_eoip,
+                                ..Default::default()
+                            };
+                            let script = wgcore::host_to_openwrt_script(&synced.client_model, &openwrt_opts);
+                            out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", synced.client_model.name), body: script });
                         }
                         Err(e) => out.modal = Some(Modal::Error { title: "Invalid client settings".into(), body: e }),
                     }
@@ -250,7 +309,7 @@ impl ClientTabState {
                 }
 
                 if ui.button("Apply Changes").clicked() {
-                    match self.sync(ctx.host_pubkey, ctx.host_name) {
+                    match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                         Ok(_) => {
                             out.sync_ran = true;
                             out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) });
@@ -281,6 +340,22 @@ impl ClientTabState {
         if let Some(tid) = self.get_tunnel_id() {
             opts.peer_tunnel_ids
                 .insert(ctx.host_pubkey.to_string(), tid);
+        }
+        if ctx.mesh_eoip {
+            // Each mesh peer's AllowedIPs is that sibling's own address
+            // (typically a lone /32), so this is mostly a no-op safety net
+            // over what `single_ip_address` would already infer -- it only
+            // matters if a peer's Allowed IPs was hand-edited into
+            // something wider. Pinning the tunnel-id keeps both sides of
+            // the link agreeing on the same id even if one side's other
+            // peers happen to occupy it first (see `pinned_tunnel_ids`'s
+            // doc comment).
+            for peer in ctx.mesh_peers {
+                if let Some(addr) = wgcore::bare_ip_address(&peer.allowed_ips) {
+                    opts.peer_remote_addresses.insert(peer.public_key.clone(), addr);
+                }
+                opts.pinned_tunnel_ids.insert(peer.public_key.clone());
+            }
         }
         host_to_routeros_script(client_model, &opts)
     }
