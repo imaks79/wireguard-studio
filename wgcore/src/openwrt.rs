@@ -87,6 +87,16 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
         String::new(),
     ];
 
+    // Every `uci -q delete X` below is followed by `|| true`: `-q` only
+    // silences the printed "Entry not found" error, it does NOT change the
+    // exit code, so on a router where X doesn't exist yet (a first run, or
+    // just a fresh peer/zone) the bare command would still fail and, under
+    // `set -e` above, silently abort the whole script before anything
+    // useful happens. The delete-then-recreate pattern itself is still
+    // wanted -- it's what keeps a rerun idempotent instead of piling up
+    // duplicate `add_list` entries -- it just needs the `|| true` net so
+    // the very first run (nothing to delete yet) doesn't die on it.
+
     // -- Preflight: install whatever's missing ---------------------------
     let mut pkg_list: Vec<&str> = REQUIRED_PACKAGES.to_vec();
     if opts.eoip {
@@ -94,6 +104,21 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
     }
     let pkgs = pkg_list.join(" ");
     lines.push("# --- Ensure required packages are installed --------------------------".to_string());
+    if opts.eoip {
+        lines.push(
+            "# NOTE: luci-app-eoip is a third-party community package (not in the".to_string(),
+        );
+        lines.push(
+            "# official OpenWrt feeds) -- see https://github.com/bogdik/luci-app-eoip. If"
+                .to_string(),
+        );
+        lines.push(
+            "# the install below fails, your router's feeds don't have it; you'd need a".to_string(),
+        );
+        lines.push(
+            "# custom feed or a self-built image that includes it.".to_string(),
+        );
+    }
     lines.push(format!("REQUIRED_PKGS=\"{pkgs}\""));
     lines.push("if command -v opkg >/dev/null 2>&1; then".to_string());
     lines.push("    MISSING=\"\"".to_string());
@@ -122,7 +147,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
 
     // -- Interface --------------------------------------------------------
     lines.push("# --- WireGuard interface ----------------------------------------------".to_string());
-    lines.push(format!("uci -q delete network.{iface}"));
+    lines.push(format!("uci -q delete network.{iface} || true"));
     lines.push(format!("uci set network.{iface}='interface'"));
     lines.push(format!("uci set network.{iface}.proto='wireguard'"));
     lines.push(format!(
@@ -136,7 +161,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
         lines.push(format!("uci set network.{iface}.mtu='{mtu}'"));
     }
     if !host.address.is_empty() {
-        lines.push(format!("uci -q delete network.{iface}.addresses"));
+        lines.push(format!("uci -q delete network.{iface}.addresses || true"));
         for addr in &host.address {
             lines.push(format!("uci add_list network.{iface}.addresses={}", uci_str(addr)));
         }
@@ -156,7 +181,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
         for (i, peer) in host.peers.iter().enumerate() {
             let label = peer.comment.clone().unwrap_or_else(|| format!("peer{}", i + 1));
             let section = uci_ident(&format!("{iface}_{label}"), &format!("{iface}_peer{}", i + 1));
-            lines.push(format!("uci -q delete network.{section}"));
+            lines.push(format!("uci -q delete network.{section} || true"));
             lines.push(format!("uci set network.{section}='wireguard_{iface}'"));
             lines.push(format!(
                 "uci set network.{section}.description={}",
@@ -173,7 +198,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
                 ));
             }
             if !peer.allowed_ips.is_empty() {
-                lines.push(format!("uci -q delete network.{section}.allowed_ips"));
+                lines.push(format!("uci -q delete network.{section}.allowed_ips || true"));
                 for ip in &peer.allowed_ips {
                     lines.push(format!("uci add_list network.{section}.allowed_ips={}", uci_str(ip)));
                 }
@@ -232,7 +257,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
             used_ids.insert(id);
 
             let section = uci_ident(&format!("{iface}_eoip_{label}"), &format!("{iface}_eoip{id}"));
-            lines.push(format!("uci -q delete eoip.{section}"));
+            lines.push(format!("uci -q delete eoip.{section} || true"));
             lines.push(format!("uci set eoip.{section}='eoip'"));
             lines.push(format!("uci set eoip.{section}.enabled='1'"));
             // "name" picks the numeric suffix of the resulting zeoip<N>
@@ -251,15 +276,20 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
         }
         if any_real_eoip {
             lines.push("uci commit eoip".to_string());
-            lines.push("/etc/init.d/eoip enable".to_string());
-            lines.push("/etc/init.d/eoip restart".to_string());
+            // "|| true": this is a third-party init script (not part of
+            // base OpenWrt), and less mature ones are known to return
+            // non-zero on a first start / when nothing was previously
+            // running to stop -- shouldn't abort the script over that,
+            // especially since every uci change above already committed.
+            lines.push("/etc/init.d/eoip enable || true".to_string());
+            lines.push("/etc/init.d/eoip restart || true".to_string());
         }
         lines.push(String::new());
     }
 
     // -- Firewall -------------------------------------------------------------
     lines.push("# --- Firewall ------------------------------------------------------------".to_string());
-    lines.push(format!("uci -q delete firewall.{zone}"));
+    lines.push(format!("uci -q delete firewall.{zone} || true"));
     lines.push(format!("uci set firewall.{zone}='zone'"));
     lines.push(format!("uci set firewall.{zone}.name={}", uci_str(&zone)));
     lines.push(format!("uci add_list firewall.{zone}.network={}", uci_str(&iface)));
@@ -275,7 +305,7 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
     lines.push("#   uci set firewall.@forwarding[-1].dest='lan'".to_string());
     if let Some(port) = host.listen_port {
         let rule = uci_ident(&format!("{iface}_allow"), "wg_allow");
-        lines.push(format!("uci -q delete firewall.{rule}"));
+        lines.push(format!("uci -q delete firewall.{rule} || true"));
         lines.push(format!("uci set firewall.{rule}='rule'"));
         lines.push(format!(
             "uci set firewall.{rule}.name={}",
@@ -362,6 +392,7 @@ mod tests {
         let script_b = host_to_openwrt_script(&b, &opts);
 
         assert!(script_a.contains("REQUIRED_PKGS=\"luci-proto-wireguard luci-app-eoip\""));
+        assert!(script_a.contains("github.com/bogdik/luci-app-eoip"), "third-party package needs the not-in-official-feeds caveat");
         assert!(script_a.contains("uci set eoip.host_a_eoip_host_b='eoip'"));
         // dst is the peer's own tunnel-overlay address (from its
         // AllowedIPs), not its public Endpoint -- EoIP/GRE rides *inside*
@@ -396,6 +427,32 @@ mod tests {
             .unwrap()
             .trim_matches('\'')
             .to_string()
+    }
+
+    #[test]
+    fn every_uci_delete_is_guarded_against_a_first_run_with_nothing_to_delete() {
+        // `uci -q delete X` still exits non-zero if X doesn't exist -- `-q`
+        // only silences the printed error, not the exit code. Under this
+        // script's `set -e`, an unguarded delete would abort the whole run
+        // on a fresh router where nothing has been configured yet.
+        let mut host = WireGuardHost::new(
+            "gw",
+            HostOptions { address: vec!["10.0.0.1/24".into()], listen_port: Some(51820), ..Default::default() },
+        )
+        .unwrap();
+        host.add_peer(
+            Peer::build(WireGuardHost::simple("alice").unwrap().public_key, vec!["10.0.0.2/32".into()], None, None, None, Some("alice".into())).unwrap(),
+        );
+
+        let script = host_to_openwrt_script(&host, &OpenWrtOptions { eoip: true, ..Default::default() });
+        let mut saw_a_delete = false;
+        for line in script.lines() {
+            if line.trim_start().starts_with("uci -q delete") {
+                saw_a_delete = true;
+                assert!(line.ends_with("|| true"), "unguarded delete would abort a fresh-router run: {line}");
+            }
+        }
+        assert!(saw_a_delete, "test setup should have exercised at least one delete line");
     }
 
     #[test]
