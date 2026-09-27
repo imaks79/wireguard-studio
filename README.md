@@ -14,16 +14,25 @@ Two crates:
 - **`gui`** (binary name `wireguard-studio`) — desktop GUI port of
   `wireguard_gui.py`, built on `egui`/`eframe`. Same two-level tab layout
   (one tab per host, a nested tab per client), the same LuCI-inspired
-  color theme, the same keyboard shortcuts, and a project `.json` format
-  that's field-for-field compatible with the Python version's — a project
-  saved by either app opens in the other.
+  color theme, the same keyboard shortcuts, and a project format whose
+  fields are the same shape as the Python version's `.json` output.
+  Projects are stored as a SQLite `.db` file, optionally encrypted with a
+  password via SQLCipher (`rusqlite`'s `bundled-sqlcipher-vendored-openssl`
+  feature) — leave the password blank on save for an unencrypted file. A
+  project saved by an older version of this app (plain `.json`) still opens
+  the same way; "Open Project" upgrades it to `.db` on the next save. A
+  separate **"Database..."** button opens a settings window for the current
+  project file — back it up to (or restore it from) another file, schedule
+  automatic backups to a folder, and enable/change/disable its password —
+  and a **"Journal"** button (bottom right) shows a persistent, timestamped
+  log of notable actions (hosts/clients added or removed, project
+  opened/saved, backups made or restored, encryption changed), kept in the
+  app's own data directory across every project you open.
 
 ## Building
 
 Requires a recent stable Rust toolchain (`rustup` is the easiest way to get
-one: <https://rustup.rs>). This was written and reviewed without network
-access to `crates.io`, so **it has not actually been compiled or run** —
-build it locally and treat the first `cargo build` as the real test:
+one: <https://rustup.rs>).
 
 ```sh
 cd wireguard-studio
@@ -107,10 +116,23 @@ GitHub Actions workflow then re-verifies the build on all three OSes on
 GitHub's own machines, independent of whichever one you developed on.
 
 **Security note:** this app generates real WireGuard private keys. Never
-commit a `.conf` file or project `.json` file that came out of an actual
-run of the app (the `.gitignore` here excludes the demo's default output
-directory for exactly this reason) -- treat any file with a real
-`PrivateKey =` line in it the same way you'd treat a password.
+commit a `.conf` file or project `.db`/`.json` file that came out of an
+actual run of the app (the `.gitignore` here excludes the demo's default
+output directory for exactly this reason) -- treat any file with a real
+`PrivateKey =` line in it the same way you'd treat a password. An
+unencrypted project `.db` holds those keys in plaintext (same as the old
+`.json` format did); give it a password on save if the file might end up
+somewhere less trusted than your own disk. This also applies to automatic
+backups (see "Database..." → Automatic backups) -- they inherit whatever
+encryption state the project was in when backed up, but still land in a
+real folder on disk, so don't point it somewhere shared/synced unless the
+project is encrypted.
+
+The app's own data directory (`~/Library/Application Support/wireguard-studio`
+on macOS, the platform equivalent elsewhere via the `dirs` crate) holds
+`settings.json` (auto-backup configuration) and `action_log.json` (the
+"Journal" log) -- neither contains key material, but the action log does
+record file paths and host/client names.
 
 ## What's intentionally different from the Python version
 
@@ -163,7 +185,8 @@ wireguard-studio/
         ├── host_ui.rs      per-host egui rendering
         ├── client_tab.rs   per-client state + model-sync logic
         ├── client_ui.rs    per-client egui rendering
-        ├── project.rs      project .json schema (matches the Python app's)
+        ├── project.rs      project dict schema (matches the Python app's JSON)
+        ├── db.rs           SQLite/SQLCipher project storage; app settings + action log
         ├── modal.rs        info/error/preview popup state
         ├── theme.rs        LuCI-inspired color theme
         └── util.rs         small shared helpers

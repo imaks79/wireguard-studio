@@ -19,8 +19,32 @@ pub const DANGER_DARK: Color32 = Color32::from_rgb(0x99, 0x2d, 0x22);
 /// Outline color for a tab whose configuration has been successfully
 /// applied to a device (see `gui/src/deploy.rs`).
 pub const SUCCESS: Color32 = Color32::from_rgb(0x2e, 0xa0, 0x4a);
+/// Cautionary (not destructive) text, e.g. "this password can't be
+/// recovered" -- less alarming than `DANGER`, more than `TEXT_MUTED`.
+pub const WARNING: Color32 = Color32::from_rgb(0xe6, 0x96, 0x14);
+
+/// Standard width for a single-line text field in a host/client settings
+/// form. Used for every plain field in a panel (not just the ones that
+/// happen to hold something long, like a key) so their boxes share one
+/// common right edge instead of each auto-sizing to whatever the grid
+/// column ends up being.
+pub const FIELD_WIDTH: f32 = 320.0;
+
+/// Uniform button widths for the grouped button rows at the bottom of a
+/// host/client tab ("File", "Preview", "Apply") -- see `sized_button`.
+pub const FILE_BUTTON_WIDTH: f32 = 190.0;
+pub const PREVIEW_BUTTON_WIDTH: f32 = 230.0;
+pub const APPLY_BUTTON_WIDTH: f32 = 170.0;
 
 pub fn apply_theme(ctx: &egui::Context) {
+    // Pin the theme to Light and never follow the OS -- otherwise egui
+    // re-applies a plain system light/dark `Visuals` on top of ours at
+    // startup, and again on every OS dark/light toggle while the app is
+    // running, which could leave some widgets' text unreadable against our
+    // specific colors (e.g. `override_text_color` assumes a light
+    // background).
+    ctx.set_theme(egui::Theme::Light);
+
     let mut visuals = egui::Visuals::light();
     visuals.override_text_color = Some(TEXT);
     visuals.panel_fill = BG_PAGE;
@@ -58,10 +82,10 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
     ctx.set_visuals(visuals);
 
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    ctx.set_style(style);
+    ctx.style_mut_of(egui::Theme::Light, |style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    });
 }
 
 /// Button-ish style used for destructive actions ("Remove Client", "Close
@@ -73,7 +97,7 @@ pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     btn_visuals.widgets.inactive.bg_fill = DANGER;
     btn_visuals.widgets.hovered.bg_fill = DANGER_DARK;
     btn_visuals.widgets.active.bg_fill = DANGER_DARK;
-    let old = ui.ctx().style().visuals.clone();
+    let old = ui.ctx().style_of(ui.ctx().theme()).visuals.clone();
     ui.ctx().set_visuals(btn_visuals);
     let resp = ui.button(text);
     ui.ctx().set_visuals(old);
@@ -108,12 +132,18 @@ pub fn mono(text_edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
     text_edit.font(egui::TextStyle::Monospace)
 }
 
+/// A button with a fixed width (see the `*_BUTTON_WIDTH` constants above)
+/// so a column of them (built with `button_column`) lines up by their
+/// right edge instead of each one hugging its own label's width.
+pub fn sized_button(ui: &mut egui::Ui, width: f32, text: &str) -> egui::Response {
+    ui.add_sized([width, ui.spacing().interact_size.y], egui::Button::new(text))
+}
+
 /// A small "Copy" button for placing next to a read-only or hard-to-select
 /// field (private/public keys, pre-shared keys) -- copies `value` to the
 /// system clipboard when clicked.
 pub fn copy_button(ui: &mut egui::Ui, value: &str) {
     if ui.button("Copy").on_hover_text("Copy to clipboard").clicked() {
-        let value = value.to_string();
-        ui.output_mut(|o| o.copied_text = value);
+        ui.ctx().copy_text(value.to_string());
     }
 }

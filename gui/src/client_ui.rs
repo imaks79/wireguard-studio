@@ -42,19 +42,19 @@ impl ClientTabState {
     ) -> ClientUiOutcome {
         let mut out = ClientUiOutcome::default();
 
-        egui::ScrollArea::vertical().id_source(("client-scroll", self.id)).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("client-scroll", self.id)).show(ui, |ui| {
             ui.group(|ui| {
                 ui.colored_label(theme::ACCENT_DARK, egui::RichText::new("Client — its own [Interface]").strong());
                 ui.checkbox(&mut self.advanced, "Advanced settings (DNS, MTU) — for fine-tuning; most clients don't need these");
 
                 egui::Grid::new(("client-iface-grid", self.id)).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("Name:");
-                    ui.text_edit_singleline(&mut self.name);
+                    ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
                     ui.label("Private Key:");
                     ui.horizontal(|ui| {
-                        let resp = ui.add_enabled(self.manual_key, theme::mono(egui::TextEdit::singleline(&mut self.private_key)).desired_width(320.0));
+                        let resp = ui.add_enabled(self.manual_key, theme::mono(egui::TextEdit::singleline(&mut self.private_key)).desired_width(theme::FIELD_WIDTH));
                         if resp.changed() || ui.checkbox(&mut self.manual_key, "Manual entry").changed() {
                             self.refresh_public_key();
                         }
@@ -67,14 +67,14 @@ impl ClientTabState {
 
                     ui.label("Public Key:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(false, theme::mono(egui::TextEdit::singleline(&mut self.public_key)).desired_width(320.0));
+                        ui.add_enabled(false, theme::mono(egui::TextEdit::singleline(&mut self.public_key)).desired_width(theme::FIELD_WIDTH));
                         theme::copy_button(ui, &self.public_key);
                     });
                     ui.end_row();
 
                     ui.label("Address:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(self.address_manual, egui::TextEdit::singleline(&mut self.address).desired_width(140.0));
+                        ui.add_enabled(self.address_manual, egui::TextEdit::singleline(&mut self.address).desired_width(theme::FIELD_WIDTH));
                         ui.checkbox(&mut self.address_manual, "Manual entry");
                         if ui.button("Reassign").clicked() {
                             match allocate_address() {
@@ -93,10 +93,10 @@ impl ClientTabState {
 
                     if self.advanced {
                         ui.label("DNS:");
-                        ui.text_edit_singleline(&mut self.dns);
+                        ui.add(egui::TextEdit::singleline(&mut self.dns).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                         ui.label("MTU:");
-                        ui.add(egui::TextEdit::singleline(&mut self.mtu).desired_width(60.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.mtu).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                     }
                 });
@@ -110,12 +110,12 @@ impl ClientTabState {
 
                 egui::Grid::new(("client-peer-grid", self.id)).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("Allowed IPs:");
-                    ui.text_edit_singleline(&mut self.allowed_ips);
+                    ui.add(egui::TextEdit::singleline(&mut self.allowed_ips).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
                     ui.label("Host Endpoint:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(self.endpoint_manual, egui::TextEdit::singleline(&mut self.endpoint).desired_width(160.0));
+                        ui.add_enabled(self.endpoint_manual, egui::TextEdit::singleline(&mut self.endpoint).desired_width(theme::FIELD_WIDTH));
                         if ui.checkbox(&mut self.endpoint_manual, "Manual entry").changed() && !self.endpoint_manual {
                             self.refresh_endpoint(ctx.host_public_ip, ctx.host_listen_port);
                         }
@@ -124,13 +124,13 @@ impl ClientTabState {
 
                     if self.advanced {
                         ui.label("Keepalive (s):");
-                        ui.add(egui::TextEdit::singleline(&mut self.keepalive).desired_width(50.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.keepalive).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                     }
 
                     ui.label("EoIP Tunnel ID:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(self.tunnel_id_manual, egui::TextEdit::singleline(&mut self.tunnel_id).desired_width(70.0));
+                        ui.add_enabled(self.tunnel_id_manual, egui::TextEdit::singleline(&mut self.tunnel_id).desired_width(theme::FIELD_WIDTH));
                         ui.checkbox(&mut self.tunnel_id_manual, "Manual entry");
                         if ui.button("Generate").clicked() {
                             self.generate_tunnel_id();
@@ -141,7 +141,7 @@ impl ClientTabState {
                     ui.label("Pre-shared key:");
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.use_psk, "Use");
-                        ui.add_enabled(self.use_psk && self.psk_manual, theme::mono(egui::TextEdit::singleline(&mut self.psk)).desired_width(220.0));
+                        ui.add_enabled(self.use_psk && self.psk_manual, theme::mono(egui::TextEdit::singleline(&mut self.psk)).desired_width(theme::FIELD_WIDTH));
                         ui.checkbox(&mut self.psk_manual, "Manual entry");
                         if ui.button("Generate").clicked() {
                             self.generate_psk();
@@ -160,12 +160,12 @@ impl ClientTabState {
 
                     egui::Grid::new(("client-mesh-grid", self.id)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         ui.label("Public IP Address:");
-                        ui.text_edit_singleline(&mut self.public_ip);
+                        ui.add(egui::TextEdit::singleline(&mut self.public_ip).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
 
                         ui.label("Listen Port:");
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.listen_port).desired_width(70.0));
+                            ui.add(egui::TextEdit::singleline(&mut self.listen_port).desired_width(theme::FIELD_WIDTH));
                             if ui.button("Random").clicked() {
                                 self.listen_port = crate::util::generate_random_listen_port().to_string();
                             }
@@ -193,7 +193,7 @@ impl ClientTabState {
 
             ui.horizontal(|ui| {
                 theme::button_column(ui, "File", |ui| {
-                    if ui.button("Open Client Config...").clicked() {
+                    if theme::sized_button(ui, theme::FILE_BUTTON_WIDTH, "Open Client Config...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
                             match std::fs::read_to_string(&path) {
                                 Ok(text) => {
@@ -221,7 +221,7 @@ impl ClientTabState {
                         }
                     }
 
-                    if ui.button("Save Configuration...").clicked() {
+                    if theme::sized_button(ui, theme::FILE_BUTTON_WIDTH, "Save Configuration...").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
@@ -239,7 +239,7 @@ impl ClientTabState {
 
                 ui.separator();
                 theme::button_column(ui, "Preview", |ui| {
-                    if ui.button("Preview Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview Configuration").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
@@ -249,7 +249,7 @@ impl ClientTabState {
                         }
                     }
 
-                    if ui.button("Preview RouterOS Script").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview RouterOS Script").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
@@ -260,7 +260,7 @@ impl ClientTabState {
                         }
                     }
 
-                    if ui.button("Preview OpenWrt Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview OpenWrt Configuration").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
@@ -275,7 +275,7 @@ impl ClientTabState {
                         }
                     }
 
-                    if ui.button("Preview pfSense Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview pfSense Configuration").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
@@ -289,7 +289,7 @@ impl ClientTabState {
 
                 ui.separator();
                 theme::button_column(ui, "Apply", |ui| {
-                    if ui.button("Sync from Host").clicked() {
+                    if theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "Sync from Host").clicked() {
                         self.apply_host_defaults(
                             ctx.host_dns,
                             ctx.host_mtu,
@@ -306,7 +306,7 @@ impl ClientTabState {
                         });
                     }
 
-                    if ui.button("Apply Changes").clicked() {
+                    if theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "Apply Changes").clicked() {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(_) => {
                                 out.sync_ran = true;
@@ -316,10 +316,10 @@ impl ClientTabState {
                         }
                     }
 
-                    if ui.button("Apply to Device...").clicked() {
+                    if theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "Apply to Device...").clicked() {
                         self.deploy.show_dialog = true;
                     }
-                    if !self.deploy.log.is_empty() && ui.button("View Log").clicked() {
+                    if !self.deploy.log.is_empty() && theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "View Log").clicked() {
                         self.deploy.show_log = true;
                     }
                 });

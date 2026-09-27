@@ -644,11 +644,9 @@ pub fn render_apply_dialog(ctx: &egui::Context, state: &mut DeployState, tab_lab
         return DialogAction::None;
     }
     let mut action = DialogAction::None;
-    let mut open = true;
 
     egui::Window::new(format!("Apply Configuration — {tab_label}"))
         .id(egui::Id::new(("deploy-dialog", tab_label)))
-        .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .default_width(380.0)
@@ -757,11 +755,12 @@ pub fn render_apply_dialog(ctx: &egui::Context, state: &mut DeployState, tab_lab
                     });
                 }
             }
+            ui.add_space(6.0);
+            if ui.button("Cancel").clicked() {
+                state.show_dialog = false;
+            }
         });
 
-    if !open {
-        state.show_dialog = false;
-    }
     action
 }
 
@@ -771,10 +770,8 @@ pub fn render_log_window(ctx: &egui::Context, state: &mut DeployState, tab_label
     if !state.show_log {
         return;
     }
-    let mut open = true;
     egui::Window::new(format!("Deploy Log — {tab_label}"))
         .id(egui::Id::new(("deploy-log", tab_label)))
-        .open(&mut open)
         .collapsible(false)
         .default_size([560.0, 360.0])
         .show(ctx, |ui| {
@@ -783,17 +780,13 @@ pub fn render_log_window(ctx: &egui::Context, state: &mut DeployState, tab_label
             });
             ui.horizontal(|ui| {
                 if ui.button("Copy").clicked() {
-                    let text = state.log.clone();
-                    ui.output_mut(|o| o.copied_text = text);
+                    ui.ctx().copy_text(state.log.clone());
                 }
                 if ui.button("Close").clicked() {
                     state.show_log = false;
                 }
             });
         });
-    if !open {
-        state.show_log = false;
-    }
 }
 
 /// A tab's label in a tab strip, outlined green with a hover tooltip once
@@ -848,9 +841,9 @@ pub fn labeled_tab_button(ui: &mut egui::Ui, selected: bool, text: &str, state: 
         tooltip.push_str(&info);
     }
 
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(theme::SUCCESS)
-        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+        .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
             // Scoped to this inner `ui` only -- see `theme::hint` for the
             // same pattern -- so it doesn't bleed into sibling tab labels.

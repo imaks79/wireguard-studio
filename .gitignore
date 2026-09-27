@@ -11,7 +11,7 @@ Thumbs.db
 
 # Output of `cargo run -p wgcore --example demo` -- these are *real*
 # generated WireGuard private keys. Never commit generated .conf files or
-# project.json files; if you want example/fixture configs in the repo,
+# project .db/.json files; if you want example/fixture configs in the repo,
 # keep them in a clearly-labeled directory (e.g. `examples/fixtures/`) and
 # double-check every key in them is a throwaway, not one you actually use.
 /wireguard-configs/

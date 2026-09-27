@@ -22,8 +22,11 @@
 //!   "Save Configuration" (inside a host tab) writes ONE .conf file for
 //!   that host, including all of its clients as [Peer] blocks.
 //!   "Save Entire Project" (top toolbar) writes the whole workspace --
-//!   every host, every client, every field -- into a single .json file
-//!   that "Open Project" can load back exactly as it was.
+//!   every host, every client, every field -- into a single SQLite `.db`
+//!   file (optionally password-encrypted with SQLCipher) that "Open
+//!   Project" can load back exactly as it was. A locked file prompts for
+//!   its password on open; a project saved before this app used SQLite
+//!   (a plaintext `.json` file) still opens the same way.
 //!
 //! "Mesh peers together" (in a host's own Host Settings tab): normally a
 //! host's clients only ever talk to each other through the host (a star).
@@ -55,10 +58,27 @@
 //! Availability" was run, the model/serial number found). See `deploy.rs`
 //! for the implementation and its documented simplifications (no host-key
 //! verification, no config-drift tracking).
+//!
+//! "Database..." (top toolbar, separate from Save/Open Project): the
+//! current project file's own settings window -- back it up to (or
+//! restore it from) another file, turn on scheduled automatic backups to
+//! a chosen folder, and enable/change/disable its SQLCipher password
+//! without going through a Save-As dialog. Needs the project to have been
+//! saved or opened as a file at least once (encryption and "show file
+//! location" act on that file in place). See `db.rs` for the storage
+//! layer and `app.rs::ui_database_window`/`ui_encryption_dialog` for the
+//! window itself.
+//!
+//! "Journal" (bottom right): a persistent, timestamped log of notable
+//! actions -- hosts/clients added or removed, project opened/saved,
+//! backups made or restored, encryption changed -- kept in this app's own
+//! data directory independent of any single project file, so it survives
+//! across every project you ever open. See `db::log_action`.
 
 mod app;
 mod client_tab;
 mod client_ui;
+mod db;
 mod deploy;
 mod host_tab;
 mod host_ui;
@@ -68,21 +88,15 @@ mod theme;
 mod util;
 
 fn main() -> eframe::Result<()> {
+    // Pinning the theme to Light (so the app never re-applies a plain
+    // system light/dark `Visuals` on top of ours) is now done in
+    // `theme::apply_theme` itself via `egui::Context::set_theme` --
+    // `NativeOptions` no longer has `follow_system_theme`/`default_theme`
+    // fields for it.
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1050.0, 760.0])
             .with_title("WireGuard Config Studio"),
-        // eframe defaults this to `true` on macOS/Windows, which makes it
-        // silently re-apply a plain system light/dark `Visuals` (via
-        // `egui::Context::set_visuals`) on top of ours -- at startup, and
-        // again on every OS dark/light toggle while the app is running.
-        // Since our own theme (`theme::apply_theme`) sets very specific
-        // colors (e.g. `override_text_color` for a light background), a
-        // stray system re-apply could leave some widgets' text unreadable
-        // against our backgrounds. We render our own consistent theme
-        // regardless of the OS setting, so system-following is unwanted.
-        follow_system_theme: false,
-        default_theme: eframe::Theme::Light,
         ..Default::default()
     };
     eframe::run_native(

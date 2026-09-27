@@ -15,6 +15,9 @@ pub struct HostUiOutcome {
     /// Set when a client's "Remove Client" button was clicked, so the
     /// app-level loop can gate it behind the confirm-close setting.
     pub close_client_requested: Option<usize>,
+    /// Set to the new tab's name when the "+" (add client) button was
+    /// clicked, so the app-level loop can record it in the action log.
+    pub client_added: Option<String>,
 }
 
 impl HostTabState {
@@ -40,7 +43,8 @@ impl HostTabState {
                 }
             }
             if ui.button("+").clicked() {
-                self.new_client_tab(None);
+                let idx = self.new_client_tab(None);
+                out.client_added = Some(self.clients[idx].name.clone());
             }
         });
         ui.separator();
@@ -55,19 +59,19 @@ impl HostTabState {
     }
 
     fn ui_settings(&mut self, ui: &mut egui::Ui, out: &mut HostUiOutcome) {
-        egui::ScrollArea::vertical().id_source(("host-scroll", self.id)).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("host-scroll", self.id)).show(ui, |ui| {
             ui.group(|ui| {
                 ui.colored_label(theme::ACCENT_DARK, egui::RichText::new("Host — [Interface]").strong());
                 ui.checkbox(&mut self.advanced, "Advanced settings (DNS, MTU, Table, FwMark, hooks, SaveConfig) — most hosts don't need these");
 
                 egui::Grid::new(("host-grid", self.id)).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("Name:");
-                    ui.text_edit_singleline(&mut self.name);
+                    ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
                     ui.label("Private Key:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(self.manual_key, theme::mono(egui::TextEdit::singleline(&mut self.private_key)).desired_width(320.0));
+                        ui.add_enabled(self.manual_key, theme::mono(egui::TextEdit::singleline(&mut self.private_key)).desired_width(theme::FIELD_WIDTH));
                         theme::copy_button(ui, &self.private_key);
                         if ui.checkbox(&mut self.manual_key, "Manual entry").changed() && !self.manual_key {
                             self.refresh_public_key();
@@ -80,18 +84,18 @@ impl HostTabState {
 
                     ui.label("Public Key:");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(false, theme::mono(egui::TextEdit::singleline(&mut self.public_key)).desired_width(320.0));
+                        ui.add_enabled(false, theme::mono(egui::TextEdit::singleline(&mut self.public_key)).desired_width(theme::FIELD_WIDTH));
                         theme::copy_button(ui, &self.public_key);
                     });
                     ui.end_row();
 
                     ui.label("Address(es):");
-                    ui.text_edit_singleline(&mut self.address);
+                    ui.add(egui::TextEdit::singleline(&mut self.address).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
                     ui.label("Listen Port:");
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.listen_port).desired_width(70.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.listen_port).desired_width(theme::FIELD_WIDTH));
                         if ui.button("Random").clicked() {
                             self.randomize_listen_port();
                         }
@@ -100,16 +104,16 @@ impl HostTabState {
 
                     if self.advanced {
                         ui.label("DNS:");
-                        ui.text_edit_singleline(&mut self.dns);
+                        ui.add(egui::TextEdit::singleline(&mut self.dns).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                         ui.label("MTU:");
-                        ui.add(egui::TextEdit::singleline(&mut self.mtu).desired_width(60.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.mtu).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                         ui.label("Table:");
-                        ui.text_edit_singleline(&mut self.table);
+                        ui.add(egui::TextEdit::singleline(&mut self.table).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                         ui.label("FwMark:");
-                        ui.text_edit_singleline(&mut self.fwmark);
+                        ui.add(egui::TextEdit::singleline(&mut self.fwmark).desired_width(theme::FIELD_WIDTH));
                         ui.end_row();
                         ui.label("SaveConfig:");
                         ui.checkbox(&mut self.save_config, "");
@@ -117,7 +121,7 @@ impl HostTabState {
                     }
 
                     ui.label("Public IP Address:");
-                    ui.text_edit_singleline(&mut self.public_ip);
+                    ui.add(egui::TextEdit::singleline(&mut self.public_ip).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
                     ui.label("Mesh peers together:");
@@ -158,7 +162,7 @@ impl HostTabState {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 theme::button_column(ui, "File", |ui| {
-                    if ui.button("Load Configuration...").clicked() {
+                    if theme::sized_button(ui, theme::FILE_BUTTON_WIDTH, "Load Configuration...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("WireGuard config", &["conf"]).pick_file() {
                             match std::fs::read_to_string(&path) {
                                 Ok(text) => {
@@ -173,7 +177,7 @@ impl HostTabState {
                         }
                     }
 
-                    if ui.button("Save Configuration...").clicked() {
+                    if theme::sized_button(ui, theme::FILE_BUTTON_WIDTH, "Save Configuration...").clicked() {
                         match self.build_full_model() {
                             Ok(host) => {
                                 if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.conf", host.name)).add_filter("WireGuard config", &["conf"]).save_file() {
@@ -190,28 +194,28 @@ impl HostTabState {
 
                 ui.separator();
                 theme::button_column(ui, "Preview", |ui| {
-                    if ui.button("Preview Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview Configuration").clicked() {
                         match self.build_full_model() {
                             Ok(host) => out.modal = Some(Modal::Preview { title: format!("Preview — {}.conf", host.name), body: host.full_config() }),
                             Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                         }
                     }
 
-                    if ui.button("Preview RouterOS Script").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview RouterOS Script").clicked() {
                         match self.build_routeros_script() {
                             Ok(script) => out.modal = Some(Modal::Preview { title: format!("RouterOS Script — {}", self.name), body: script }),
                             Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                         }
                     }
 
-                    if ui.button("Preview OpenWrt Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview OpenWrt Configuration").clicked() {
                         match self.build_openwrt_script() {
                             Ok(script) => out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", self.name), body: script }),
                             Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                         }
                     }
 
-                    if ui.button("Preview pfSense Configuration").clicked() {
+                    if theme::sized_button(ui, theme::PREVIEW_BUTTON_WIDTH, "Preview pfSense Configuration").clicked() {
                         match self.build_pfsense_script() {
                             Ok(script) => out.modal = Some(Modal::Preview { title: format!("pfSense Script — {}", self.name), body: script }),
                             Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
@@ -221,17 +225,17 @@ impl HostTabState {
 
                 ui.separator();
                 theme::button_column(ui, "Apply", |ui| {
-                    if ui.button("Apply Changes").clicked() {
+                    if theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "Apply Changes").clicked() {
                         match self.build_interface_model() {
                             Ok(_) => out.modal = Some(Modal::Info { title: "Applied".into(), body: format!("Changes applied for '{}'.", self.name) }),
                             Err(e) => out.modal = Some(Modal::Error { title: "Invalid host settings".into(), body: e }),
                         }
                     }
 
-                    if ui.button("Apply to Device...").clicked() {
+                    if theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "Apply to Device...").clicked() {
                         self.deploy.show_dialog = true;
                     }
-                    if !self.deploy.log.is_empty() && ui.button("View Log").clicked() {
+                    if !self.deploy.log.is_empty() && theme::sized_button(ui, theme::APPLY_BUTTON_WIDTH, "View Log").clicked() {
                         self.deploy.show_log = true;
                     }
                 });
