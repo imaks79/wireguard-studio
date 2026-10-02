@@ -54,6 +54,10 @@ pub struct HostProjectDict {
     /// this option existed.
     #[serde(default)]
     pub mesh_eoip: bool,
+    /// "EoIP to peers": whether this host builds EoIP tunnels to its own
+    /// clients. Absent (so off) in projects saved before this option existed.
+    #[serde(default)]
+    pub host_eoip: bool,
     /// "Apply to Device..." state for this host's own generated config.
     /// Absent in projects saved before this option existed.
     #[serde(default)]

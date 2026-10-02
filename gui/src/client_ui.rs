@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use eframe::egui;
 
 use crate::client_tab::ClientTabState;
@@ -31,6 +33,28 @@ pub struct ClientCtx<'a> {
     /// Whether meshed peer pairs should also get an EoIP tunnel in their
     /// RouterOS export.
     pub mesh_eoip: bool,
+    /// Whether the parent host builds an EoIP tunnel to this client.
+    pub host_eoip: bool,
+}
+
+impl ClientCtx<'_> {
+    /// EoIP is opt-in per link: the host link only when the host has "EoIP
+    /// to peers" on, mesh links only when "+ EoIP (L2)" is on.
+    fn eoip_peer_keys(&self) -> HashSet<String> {
+        let mut keys = HashSet::new();
+        if self.host_eoip {
+            keys.insert(self.host_pubkey.to_string());
+        }
+        if self.mesh_eoip {
+            keys.extend(self.mesh_peers.iter().map(|p| p.public_key.clone()));
+        }
+        keys
+    }
+
+    fn openwrt_options(&self) -> wgcore::OpenWrtOptions {
+        let keys = self.eoip_peer_keys();
+        wgcore::OpenWrtOptions { eoip: !keys.is_empty(), eoip_peers: Some(keys), ..Default::default() }
+    }
 }
 
 impl ClientTabState {
@@ -128,14 +152,14 @@ impl ClientTabState {
                         ui.end_row();
                     }
 
-                    ui.label("EoIP Tunnel ID:");
-                    ui.horizontal(|ui| {
+                    ui.add_enabled_ui(ctx.host_eoip, |ui| { ui.label("EoIP Tunnel ID:"); });
+                    ui.add_enabled_ui(ctx.host_eoip, |ui| ui.horizontal(|ui| {
                         ui.add_enabled(self.tunnel_id_manual, egui::TextEdit::singleline(&mut self.tunnel_id).desired_width(theme::FIELD_WIDTH));
                         ui.checkbox(&mut self.tunnel_id_manual, "Manual entry");
                         if ui.button("Generate").clicked() {
                             self.generate_tunnel_id();
                         }
-                    });
+                    }));
                     ui.end_row();
 
                     ui.label("Pre-shared key:");
@@ -264,10 +288,7 @@ impl ClientTabState {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
-                                let openwrt_opts = wgcore::OpenWrtOptions {
-                                    eoip: ctx.mesh_eoip,
-                                    ..Default::default()
-                                };
+                                let openwrt_opts = ctx.openwrt_options();
                                 let script = wgcore::host_to_openwrt_script(&synced.client_model, &openwrt_opts);
                                 out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", synced.client_model.name), body: script });
                             }
@@ -358,7 +379,7 @@ impl ClientTabState {
                             match device_type {
                                 DeviceType::MikroTik => Ok(self.build_routeros_script(&synced.client_model, ctx)),
                                 DeviceType::OpenWrt => {
-                                    let opts = wgcore::OpenWrtOptions { eoip: ctx.mesh_eoip, ..Default::default() };
+                                    let opts = ctx.openwrt_options();
                                     Ok(wgcore::host_to_openwrt_script(&synced.client_model, &opts))
                                 }
                                 DeviceType::PfSense => Ok(wgcore::host_to_pfsense_script(&synced.client_model, &wgcore::PfSenseOptions::default())),
@@ -384,7 +405,7 @@ impl ClientTabState {
         client_model: &wgcore::WireGuardHost,
         ctx: &ClientCtx<'_>,
     ) -> String {
-        let mut opts = RouterOsOptions::default();
+        let mut opts = RouterOsOptions { eoip_peers: ctx.eoip_peer_keys(), ..Default::default() };
         if let Some(host_addr) = &ctx.host_tunnel_remote {
             opts.peer_remote_addresses
                 .insert(ctx.host_pubkey.to_string(), host_addr.clone());

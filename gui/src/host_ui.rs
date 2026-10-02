@@ -124,6 +124,16 @@ impl HostTabState {
                     ui.add(egui::TextEdit::singleline(&mut self.public_ip).desired_width(theme::FIELD_WIDTH));
                     ui.end_row();
 
+                    ui.label("EoIP to peers:");
+                    ui.checkbox(&mut self.host_eoip, "")
+                        .on_hover_text(
+                            "Build an EoIP tunnel (L2, bridging raw Ethernet) between this host and \
+                             each of its peers, on top of the routed WireGuard link. Off by default; \
+                             a MikroTik built-in in the RouterOS export, the third-party \
+                             'eoip'/'luci-app-eoip' packages in the OpenWrt export.",
+                        );
+                    ui.end_row();
+
                     ui.label("Mesh peers together:");
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.mesh_peers_enabled, "")
@@ -328,6 +338,7 @@ impl HostTabState {
             mesh_enabled: self.mesh_peers_enabled,
             mesh_peers: &mesh_peers,
             mesh_eoip: self.mesh_eoip,
+            host_eoip: self.host_eoip,
         };
 
         let client_out =
@@ -350,6 +361,9 @@ impl HostTabState {
         let host = self.build_full_model()?;
         let mut opts = RouterOsOptions::default();
         for client in &self.clients {
+            if self.host_eoip {
+                opts.eoip_peers.insert(client.public_key.clone());
+            }
             if let Some(addr) = wgcore::bare_ip_address(&split_csv(&client.address)) {
                 opts.peer_remote_addresses
                     .insert(client.public_key.clone(), addr);
@@ -366,7 +380,7 @@ impl HostTabState {
     fn build_openwrt_script(&mut self) -> Result<String, String> {
         let host = self.build_full_model()?;
         let opts = wgcore::OpenWrtOptions {
-            eoip: self.mesh_eoip,
+            eoip: self.host_eoip,
             ..Default::default()
         };
         Ok(wgcore::host_to_openwrt_script(&host, &opts))

@@ -107,6 +107,10 @@ pub struct RouterOsOptions {
     /// one script ever encodes it) client causing the collision is what
     /// gets flagged instead.
     pub pinned_tunnel_ids: HashSet<String>,
+    /// Public keys of the peers that should get an EoIP tunnel. Opt-in:
+    /// a peer not listed here gets only its plain WireGuard link, so an
+    /// empty set (the default) generates no EoIP at all.
+    pub eoip_peers: HashSet<String>,
     pub interface_name: Option<String>,
 }
 
@@ -189,6 +193,9 @@ pub fn host_to_routeros_script(host: &WireGuardHost, opts: &RouterOsOptions) -> 
         let mut used_tunnel_ids: HashSet<u32> = HashSet::new();
 
         for peer in &host.peers {
+            if !opts.eoip_peers.contains(&peer.public_key) {
+                continue;
+            }
             let label = peer
                 .comment
                 .clone()
@@ -399,9 +406,10 @@ mod tests {
         a.add_peer(Peer::build(host_b.public_key.clone(), host_b.address.clone(), None, Some(25), None, Some("Mesh — host-b".into())).unwrap());
 
         let mut opts_a = RouterOsOptions::default();
-        opts_a.peer_tunnel_ids.insert(colliding_client_pubkey, base_id);
+        opts_a.peer_tunnel_ids.insert(colliding_client_pubkey.clone(), base_id);
         opts_a.peer_remote_addresses.insert(host_b.public_key.clone(), "172.16.2.1".into());
         opts_a.pinned_tunnel_ids.insert(host_b.public_key.clone());
+        opts_a.eoip_peers.extend([host_b.public_key.clone(), colliding_client_pubkey.clone()]);
         let script_a = host_to_routeros_script(&a, &opts_a);
 
         // Host B's script: nothing else competing for the id, just the
@@ -412,10 +420,25 @@ mod tests {
         let mut opts_b = RouterOsOptions::default();
         opts_b.peer_remote_addresses.insert(host_a.public_key.clone(), "172.16.1.1".into());
         opts_b.pinned_tunnel_ids.insert(host_a.public_key.clone());
+        opts_b.eoip_peers.insert(host_a.public_key.clone());
         let script_b = host_to_routeros_script(&b, &opts_b);
 
         assert_eq!(extract_tunnel_id(&script_a, "Mesh"), base_id, "pinned mesh id must not be bumped by the colliding client");
         assert_eq!(extract_tunnel_id(&script_b, "Mesh"), base_id);
         assert!(script_a.contains("WARNING: tunnel-id"), "the collision should still be flagged instead of silently resolved");
+    }
+
+    #[test]
+    fn no_eoip_unless_peer_is_opted_in() {
+        let mut host = WireGuardHost::new("h", HostOptions { address: vec!["172.16.1.1/24".into()], ..Default::default() }).unwrap();
+        let pk = WireGuardHost::simple("c").unwrap().public_key;
+        host.add_peer(Peer::build(pk.clone(), vec!["172.16.1.5/32".into()], None, None, None, Some("c".into())).unwrap());
+
+        let off = host_to_routeros_script(&host, &RouterOsOptions::default());
+        assert!(!off.contains("/interface/eoip") && !off.contains("protocol=gre"));
+
+        let mut opts = RouterOsOptions::default();
+        opts.eoip_peers.insert(pk);
+        assert!(host_to_routeros_script(&host, &opts).contains("/interface/eoip"));
     }
 }

@@ -121,6 +121,10 @@ pub struct HostTabState {
     /// tunnel in their RouterOS export. Only meaningful while
     /// `mesh_peers_enabled` is on; RouterOS export only.
     pub mesh_eoip: bool,
+    /// "EoIP to peers": whether this host builds an EoIP (L2) tunnel to
+    /// each of its own clients. Off by default -- most setups only need
+    /// the routed WireGuard link.
+    pub host_eoip: bool,
 
     /// "Apply to Device..." state for this host itself (its own generated
     /// config, not its clients' -- each client has its own `deploy` too).
@@ -168,6 +172,7 @@ impl HostTabState {
             advanced: false,
             mesh_peers_enabled: false,
             mesh_eoip: false,
+            host_eoip: false,
             deploy: DeployState::default(),
             clients: Vec::new(),
             selected: HostSubTab::Settings,
@@ -471,6 +476,7 @@ impl HostTabState {
             manual_key: self.manual_key,
             mesh_peers_enabled: self.mesh_peers_enabled,
             mesh_eoip: self.mesh_eoip,
+            host_eoip: self.host_eoip,
             deploy: self.deploy.to_project_dict(),
             clients: self.clients.iter().map(ClientTabState::to_project_dict).collect(),
         }
@@ -503,6 +509,7 @@ impl HostTabState {
         s.manual_key = d.manual_key;
         s.mesh_peers_enabled = d.mesh_peers_enabled;
         s.mesh_eoip = d.mesh_eoip;
+        s.host_eoip = d.host_eoip;
         s.deploy = DeployState::from_project_dict(&d.deploy);
         s.refresh_advanced_lock();
 

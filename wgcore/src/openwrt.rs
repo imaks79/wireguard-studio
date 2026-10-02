@@ -72,6 +72,9 @@ pub struct OpenWrtOptions {
     /// installed unconditionally the way RouterOS's built-in EoIP support
     /// behaves.
     pub eoip: bool,
+    /// When set, restricts [`Self::eoip`] to just these peers' public
+    /// keys; `None` means every eligible peer.
+    pub eoip_peers: Option<HashSet<String>>,
 }
 
 pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> String {
@@ -235,6 +238,9 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
         let mut used_ids: HashSet<u32> = HashSet::new();
         let mut any_real_eoip = false;
         for peer in &host.peers {
+            if opts.eoip_peers.as_ref().is_some_and(|set| !set.contains(&peer.public_key)) {
+                continue;
+            }
             let label = peer.comment.clone().unwrap_or_else(|| peer.public_key.chars().take(8).collect());
             let remote_ip = match single_ip_address(&peer.allowed_ips) {
                 Some(ip) => ip,
