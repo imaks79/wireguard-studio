@@ -357,8 +357,7 @@ impl HostTabState {
     /// The host's own RouterOS export: unaffected by "Mesh peers together",
     /// since meshing only adds links *between* this host's clients, not a
     /// new kind of link to the host itself -- see [`Self::build_full_model`].
-    fn build_routeros_script(&mut self) -> Result<String, String> {
-        let host = self.build_full_model()?;
+    fn routeros_options(&self) -> RouterOsOptions {
         let mut opts = RouterOsOptions::default();
         for client in &self.clients {
             if self.host_eoip {
@@ -372,15 +371,24 @@ impl HostTabState {
                 opts.peer_tunnel_ids.insert(client.public_key.clone(), tid);
             }
         }
-        Ok(wgcore::host_to_routeros_script(&host, &opts))
+        opts
+    }
+
+    fn build_routeros_script(&mut self) -> Result<String, String> {
+        let host = self.build_full_model()?;
+        Ok(wgcore::host_to_routeros_script(&host, &self.routeros_options()))
     }
 
     /// The host's own OpenWrt/UCI export, unaffected by "Mesh peers
     /// together" for the same reason as [`Self::build_routeros_script`].
     fn build_openwrt_script(&mut self) -> Result<String, String> {
         let host = self.build_full_model()?;
+        let ros = self.routeros_options();
         let opts = wgcore::OpenWrtOptions {
             eoip: self.host_eoip,
+            eoip_peers: Some(ros.eoip_peers),
+            peer_remote_addresses: ros.peer_remote_addresses,
+            peer_tunnel_ids: ros.peer_tunnel_ids,
             ..Default::default()
         };
         Ok(wgcore::host_to_openwrt_script(&host, &opts))

@@ -7,7 +7,7 @@
 //! Paste the output into an SSH/terminal session on the router (or copy
 //! it over and run it as a shell script).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::host::WireGuardHost;
 use crate::routeros::{eoip_tunnel_id, single_ip_address};
@@ -75,6 +75,16 @@ pub struct OpenWrtOptions {
     /// When set, restricts [`Self::eoip`] to just these peers' public
     /// keys; `None` means every eligible peer.
     pub eoip_peers: Option<HashSet<String>>,
+    /// Same meaning as in [`crate::RouterOsOptions`]: the address to use as
+    /// the EoIP remote for a peer (by public key) instead of inferring it
+    /// from its AllowedIPs -- needed when AllowedIPs is a routed subnet,
+    /// e.g. a client's link to its host.
+    pub peer_remote_addresses: HashMap<String, String>,
+    /// Same as in RouterOS: a user-set tunnel-id per peer, so both ends of
+    /// a link use the same id.
+    pub peer_tunnel_ids: HashMap<String, u32>,
+    /// Peers whose id must not be renumbered on a local collision.
+    pub pinned_tunnel_ids: HashSet<String>,
 }
 
 pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> String {
@@ -242,7 +252,12 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
                 continue;
             }
             let label = peer.comment.clone().unwrap_or_else(|| peer.public_key.chars().take(8).collect());
-            let remote_ip = match single_ip_address(&peer.allowed_ips) {
+            let remote_ip = opts
+                .peer_remote_addresses
+                .get(&peer.public_key)
+                .cloned()
+                .or_else(|| single_ip_address(&peer.allowed_ips));
+            let remote_ip = match remote_ip {
                 Some(ip) => ip,
                 None => {
                     lines.push(format!(
@@ -254,9 +269,14 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
             };
             any_real_eoip = true;
 
-            let mut id = eoip_tunnel_id(&host.public_key, &peer.public_key);
+            let mut id = opts
+                .peer_tunnel_ids
+                .get(&peer.public_key)
+                .copied()
+                .unwrap_or_else(|| eoip_tunnel_id(&host.public_key, &peer.public_key));
+            let pinned = opts.pinned_tunnel_ids.contains(&peer.public_key);
             let mut attempts = 0;
-            while used_ids.contains(&id) && attempts < 70000 {
+            while !pinned && used_ids.contains(&id) && attempts < 70000 {
                 id = if id < 65535 { id + 1 } else { 1 };
                 attempts += 1;
             }
@@ -410,6 +430,20 @@ mod tests {
         let id_a = extract_uci_value(&script_a, "idtun");
         let id_b = extract_uci_value(&script_b, "idtun");
         assert_eq!(id_a, id_b, "both ends of the same link must agree on the same idtun");
+    }
+
+    #[test]
+    fn eoip_uses_explicit_remote_and_tunnel_id_for_a_routed_subnet_peer() {
+        let mut host = WireGuardHost::new("gw", HostOptions { address: vec!["10.0.0.2/24".into()], ..Default::default() }).unwrap();
+        let pk = WireGuardHost::simple("host-1").unwrap().public_key;
+        host.add_peer(Peer::build(pk.clone(), vec!["10.0.0.0/24".into()], None, None, None, Some("host-1".into())).unwrap());
+
+        let mut opts = OpenWrtOptions { eoip: true, ..Default::default() };
+        opts.peer_remote_addresses.insert(pk.clone(), "10.0.0.1".into());
+        opts.peer_tunnel_ids.insert(pk, 4242);
+        let script = host_to_openwrt_script(&host, &opts);
+        assert!(!script.contains("Skipped EoIP"));
+        assert!(script.contains(".dst='10.0.0.1'") && script.contains(".idtun='4242'"));
     }
 
     #[test]

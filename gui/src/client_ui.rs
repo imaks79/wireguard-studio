@@ -50,11 +50,6 @@ impl ClientCtx<'_> {
         }
         keys
     }
-
-    fn openwrt_options(&self) -> wgcore::OpenWrtOptions {
-        let keys = self.eoip_peer_keys();
-        wgcore::OpenWrtOptions { eoip: !keys.is_empty(), eoip_peers: Some(keys), ..Default::default() }
-    }
 }
 
 impl ClientTabState {
@@ -288,7 +283,7 @@ impl ClientTabState {
                         match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                             Ok(synced) => {
                                 out.sync_ran = true;
-                                let openwrt_opts = ctx.openwrt_options();
+                                let openwrt_opts = self.openwrt_options(ctx);
                                 let script = wgcore::host_to_openwrt_script(&synced.client_model, &openwrt_opts);
                                 out.modal = Some(Modal::Preview { title: format!("OpenWrt Script — {}", synced.client_model.name), body: script });
                             }
@@ -379,7 +374,7 @@ impl ClientTabState {
                             match device_type {
                                 DeviceType::MikroTik => Ok(self.build_routeros_script(&synced.client_model, ctx)),
                                 DeviceType::OpenWrt => {
-                                    let opts = ctx.openwrt_options();
+                                    let opts = self.openwrt_options(ctx);
                                     Ok(wgcore::host_to_openwrt_script(&synced.client_model, &opts))
                                 }
                                 DeviceType::PfSense => Ok(wgcore::host_to_pfsense_script(&synced.client_model, &wgcore::PfSenseOptions::default())),
@@ -400,11 +395,29 @@ impl ClientTabState {
         out
     }
 
+    /// OpenWrt gets the same EoIP remotes/ids as RouterOS, so both ends of a
+    /// link agree regardless of which device type each one is.
+    fn openwrt_options(&self, ctx: &ClientCtx<'_>) -> wgcore::OpenWrtOptions {
+        let ros = self.routeros_options(ctx);
+        wgcore::OpenWrtOptions {
+            eoip: !ros.eoip_peers.is_empty(),
+            eoip_peers: Some(ros.eoip_peers),
+            peer_remote_addresses: ros.peer_remote_addresses,
+            peer_tunnel_ids: ros.peer_tunnel_ids,
+            pinned_tunnel_ids: ros.pinned_tunnel_ids,
+            ..Default::default()
+        }
+    }
+
     fn build_routeros_script(
         &self,
         client_model: &wgcore::WireGuardHost,
         ctx: &ClientCtx<'_>,
     ) -> String {
+        host_to_routeros_script(client_model, &self.routeros_options(ctx))
+    }
+
+    fn routeros_options(&self, ctx: &ClientCtx<'_>) -> RouterOsOptions {
         let mut opts = RouterOsOptions { eoip_peers: ctx.eoip_peer_keys(), ..Default::default() };
         if let Some(host_addr) = &ctx.host_tunnel_remote {
             opts.peer_remote_addresses
@@ -430,6 +443,6 @@ impl ClientTabState {
                 opts.pinned_tunnel_ids.insert(peer.public_key.clone());
             }
         }
-        host_to_routeros_script(client_model, &opts)
+        opts
     }
 }
