@@ -145,6 +145,33 @@ with it off. The client's **EoIP Tunnel ID** field is only active while the
 host has it on. **"Mesh peers together" → "+ EoIP (L2)"** separately controls
 EoIP between meshed clients.
 
+## Editing an interface that already exists on a router
+
+A host's **Apply to Device** (MikroTik / OpenWrt) works on an existing
+interface, not just a fresh router. The target is **"Interface on device"**
+in the host's tab, which defaults to the host's Name:
+
+- If the interface exists it is updated in place; otherwise it is created.
+- Its peer list is **replaced** with the host's client tabs plus its
+  **"Other peers"** rows -- so adding, removing or editing a peer in the app
+  and applying again does exactly that on the router. A peer that exists
+  only on the router is removed by an apply; copy the interface first if
+  you want to keep it.
+- **"Manage firewall"** off leaves the router's firewall alone. On OpenWrt
+  with it on, an interface that is already in a zone stays there, and the
+  shared `wireguard` zone is joined rather than rebuilt, so several
+  interfaces can coexist.
+
+**Copy from Device...** (same dialog, **Copy Interface from Device**) reads
+the WireGuard interfaces a MikroTik or OpenWrt router already has over SSH
+-- keys, addresses, port, every peer -- without changing anything on it. A
+router with several interfaces lists them all; each can be loaded into the
+current tab or opened as a host tab of its own. Copied peers land in
+**"Other peers"** (only their public key is known, so they can't be client
+tabs), "Manage firewall" is switched off, and their **Route** box reflects
+the device: OpenWrt's `route_allowed_ips`, always off for RouterOS, whose
+routes live separately in `/ip/route` and are not imported.
+
 ## What's intentionally different from the Python version
 
 - **No `wg` CLI fallback for key generation.** The Python original used

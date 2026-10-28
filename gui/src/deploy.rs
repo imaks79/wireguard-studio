@@ -90,11 +90,13 @@ pub struct DeviceInfo {
 enum Operation {
     Apply(String),
     Check,
+    Import,
 }
 
 enum DeployOutcome {
     Applied,
     Checked(DeviceInfo),
+    Imported(Vec<wgcore::ImportedInterface>),
 }
 
 enum DeployProgress {
@@ -121,8 +123,17 @@ fn run_operation(target: &SshTarget, device_type: DeviceType, op: Operation, tx:
     };
 
     log(format!("Connecting to {}:{}...\n", target.host, target.port));
-    let tcp = TcpStream::connect((target.host.as_str(), target.port))
-        .map_err(|e| format!("TCP connect to {}:{} failed: {e}", target.host, target.port))?;
+    let tcp = TcpStream::connect((target.host.as_str(), target.port)).map_err(|e| {
+        // EBADF from a plain connect() is what macOS reports when a network
+        // content filter drops the flow, closing the socket underneath it.
+        let hint = if cfg!(target_os = "macos") && e.raw_os_error() == Some(9) {
+            "\n\nThis usually means a firewall app on this Mac (Little Snitch, LuLu, ...) blocked the \
+             connection -- allow wireguard-studio to reach this address in its rules, then try again."
+        } else {
+            ""
+        };
+        format!("TCP connect to {}:{} failed: {e}{hint}", target.host, target.port)
+    })?;
     let mut sess = ssh2::Session::new().map_err(|e| format!("SSH session init failed: {e}"))?;
     sess.set_tcp_stream(tcp);
     sess.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
@@ -160,7 +171,78 @@ fn run_operation(target: &SshTarget, device_type: DeviceType, op: Operation, tx:
             };
             Ok(DeployOutcome::Checked(info))
         }
+        Operation::Import => {
+            let interfaces = match device_type {
+                DeviceType::OpenWrt => import_openwrt(&sess, &mut log)?,
+                DeviceType::MikroTik => import_mikrotik(&sess, &mut log)?,
+                // The button is only offered for the two types above.
+                DeviceType::PlainWg | DeviceType::PfSense => Vec::new(),
+            };
+            Ok(DeployOutcome::Imported(interfaces))
+        }
     }
+}
+
+/// Like [`run_exec_capture`], but nothing the command prints reaches the
+/// log -- for reading configuration back, where the output is full of
+/// private and pre-shared keys that have no business in a log window.
+fn run_exec_quiet(sess: &ssh2::Session, command: &str) -> Result<(String, i32), String> {
+    let mut output = String::new();
+    let mut capture = |chunk: String| output.push_str(&chunk);
+    let mut channel = sess.channel_session().map_err(|e| format!("Failed to open channel: {e}"))?;
+    channel.exec(command).map_err(|e| format!("Failed to query the device: {e}"))?;
+    stream_channel_output(&mut channel, &mut capture);
+    channel.wait_close().map_err(|e| format!("Failed waiting for the device to answer: {e}"))?;
+    let status = channel.exit_status().unwrap_or(-1);
+    Ok((output, status))
+}
+
+fn log_imported(interfaces: &[wgcore::ImportedInterface], log: &mut dyn FnMut(String)) {
+    log(format!("Found {} WireGuard interface(s).\n", interfaces.len()));
+    for iface in interfaces {
+        log(format!("  {} -- {} peer(s)\n", iface.name, iface.peers.len()));
+    }
+}
+
+/// Everything WireGuard lives in `/etc/config/network` on OpenWrt, so one
+/// `uci show network` is the whole read.
+fn import_openwrt(sess: &ssh2::Session, log: &mut dyn FnMut(String)) -> Result<Vec<wgcore::ImportedInterface>, String> {
+    log("Reading WireGuard interfaces (uci show network; output not logged, it contains keys)...\n".to_string());
+    let (output, status) = run_exec_quiet(sess, "uci show network")?;
+    if status != 0 {
+        return Err(format!("'uci show network' exited with status {status} -- is this an OpenWrt device?"));
+    }
+    let interfaces = wgcore::parse_openwrt_network(&output);
+    log_imported(&interfaces, log);
+    Ok(interfaces)
+}
+
+/// See [`wgcore::ROUTEROS_DUMP_COMMANDS`]: only the first command (the
+/// interfaces themselves) has to succeed. The rest are best-effort, since
+/// what they read doesn't exist on every RouterOS version/setup.
+fn import_mikrotik(sess: &ssh2::Session, log: &mut dyn FnMut(String)) -> Result<Vec<wgcore::ImportedInterface>, String> {
+    log("Reading WireGuard interfaces, peers and addresses (output not logged, it contains keys)...\n".to_string());
+    let mut dump = String::new();
+    for (i, command) in wgcore::ROUTEROS_DUMP_COMMANDS.iter().enumerate() {
+        let (output, status) = run_exec_quiet(sess, command)?;
+        if i == 0 && (status != 0 || !output.contains("@IF")) {
+            // A router with no WireGuard interfaces prints nothing at all,
+            // which is a valid (empty) answer; anything else printed here
+            // is RouterOS explaining why the command didn't run.
+            let complaint = output.trim();
+            if status != 0 || !complaint.is_empty() {
+                return Err(format!(
+                    "Could not read WireGuard interfaces (RouterOS 7+ is required){}",
+                    if complaint.is_empty() { ".".to_string() } else { format!(": {complaint}") }
+                ));
+            }
+        }
+        dump.push_str(&output);
+        dump.push('\n');
+    }
+    let interfaces = wgcore::parse_routeros_dump(&dump);
+    log_imported(&interfaces, log);
+    Ok(interfaces)
 }
 
 /// Runs one command to completion, capturing its combined stdout+stderr as
@@ -394,11 +476,13 @@ pub struct DeployState {
     pub show_log: bool,
     pub log: String,
     running: bool,
-    /// Whether `handle` (once it resolves) is for a "Check Availability"
-    /// run rather than an actual apply -- just used to phrase the error
-    /// modal's title correctly if it fails.
-    pending_is_check: bool,
+    /// Title for the error modal if the run `handle` belongs to fails --
+    /// "Apply failed", "Check failed", ...
+    pending_error_title: &'static str,
     handle: Option<DeployHandle>,
+    /// WireGuard interfaces a "Copy Interface from Device" run found, kept
+    /// here until the owning tab shows its picker and takes them.
+    pub imported: Option<Vec<wgcore::ImportedInterface>>,
 
     /// Whether this tab's configuration has been successfully applied to
     /// a device at some point -- drives the green tab fill. This is
@@ -434,8 +518,9 @@ impl Clone for DeployState {
             show_log: false,
             log: String::new(),
             running: false,
-            pending_is_check: false,
+            pending_error_title: "Apply failed",
             handle: None,
+            imported: None,
             applied: self.applied,
             applied_device_type: self.applied_device_type,
             applied_ip: self.applied_ip.clone(),
@@ -461,8 +546,9 @@ impl Default for DeployState {
             show_log: false,
             log: String::new(),
             running: false,
-            pending_is_check: false,
+            pending_error_title: "Apply failed",
             handle: None,
+            imported: None,
             applied: false,
             applied_device_type: None,
             applied_ip: String::new(),
@@ -509,10 +595,20 @@ impl DeployState {
                             }
                             Modal::Info { title: "Device reachable".into(), body }
                         }
-                        Err(e) => {
-                            let title = if self.pending_is_check { "Check failed" } else { "Apply failed" };
-                            Modal::Error { title: title.into(), body: e }
+                        Ok(DeployOutcome::Imported(interfaces)) => {
+                            self.handle = None;
+                            if interfaces.is_empty() {
+                                return Some(Modal::Info {
+                                    title: "No WireGuard interfaces".into(),
+                                    body: format!("{} at {} has no WireGuard interfaces configured.", self.device_type.label(), self.target_ip),
+                                });
+                            }
+                            // No modal: the owning tab opens its picker.
+                            self.show_dialog = false;
+                            self.imported = Some(interfaces);
+                            return None;
                         }
+                        Err(e) => Modal::Error { title: self.pending_error_title.into(), body: e },
                     });
                     self.handle = None;
                     break;
@@ -535,7 +631,7 @@ impl DeployState {
     pub(crate) fn start(&mut self, target: SshTarget, device_type: DeviceType, script: String) {
         self.log.clear();
         self.running = true;
-        self.pending_is_check = false;
+        self.pending_error_title = "Apply failed";
         self.handle = Some(start_ssh_operation(target, device_type, Operation::Apply(script)));
     }
 
@@ -545,8 +641,34 @@ impl DeployState {
     pub(crate) fn start_check(&mut self, target: SshTarget, device_type: DeviceType) {
         self.log.clear();
         self.running = true;
-        self.pending_is_check = true;
+        self.pending_error_title = "Check failed";
         self.handle = Some(start_ssh_operation(target, device_type, Operation::Check));
+    }
+
+    /// "Copy Interface from Device": reads every WireGuard interface the
+    /// device has into [`Self::imported`]. Read-only, like a check.
+    fn start_import(&mut self, target: SshTarget, device_type: DeviceType) {
+        self.log.clear();
+        self.running = true;
+        self.pending_error_title = "Copy from device failed";
+        self.imported = None;
+        self.handle = Some(start_ssh_operation(target, device_type, Operation::Import));
+    }
+
+    /// The same device and SSH credentials for another tab -- a second
+    /// interface copied from this device -- without this tab's own
+    /// "applied" status.
+    pub fn for_another_tab(&self) -> DeployState {
+        let mut copy = self.clone();
+        copy.applied = false;
+        copy.applied_device_type = None;
+        copy.applied_ip.clear();
+        copy
+    }
+
+    /// "MikroTik at 192.168.88.1", for messages about a finished import.
+    pub fn target_description(&self) -> String {
+        format!("{} at {}", self.device_type.label(), self.target_ip.trim())
     }
 
     /// Bookkeeping for the plain-WG-client path, which never touches SSH
@@ -591,8 +713,9 @@ impl DeployState {
             show_log: false,
             log: String::new(),
             running: false,
-            pending_is_check: false,
+            pending_error_title: "Apply failed",
             handle: None,
+            imported: None,
             applied: d.applied,
             applied_device_type: d.applied_device_type.as_deref().map(DeviceType::from_str_or_default),
             applied_ip: d.applied_ip.clone(),
@@ -639,7 +762,9 @@ fn build_target(state: &DeployState) -> SshTarget {
     }
 }
 
-pub fn render_apply_dialog(ctx: &egui::Context, state: &mut DeployState, tab_label: &str) -> DialogAction {
+/// `allow_import` adds "Copy Interface from Device" -- for host tabs only,
+/// since what comes back is a whole interface with its peer list.
+pub fn render_apply_dialog(ctx: &egui::Context, state: &mut DeployState, tab_label: &str, allow_import: bool) -> DialogAction {
     if !state.show_dialog {
         return DialogAction::None;
     }
@@ -753,6 +878,21 @@ pub fn render_apply_dialog(ctx: &egui::Context, state: &mut DeployState, tab_lab
                             action = DialogAction::Connect { device_type: state.device_type, target: build_target(state) };
                         }
                     });
+                    if allow_import && matches!(state.device_type, DeviceType::OpenWrt | DeviceType::MikroTik) {
+                        let clicked = ui
+                            .add_enabled(ready, egui::Button::new("Copy Interface from Device"))
+                            .on_hover_text(
+                                "Reads the WireGuard interfaces that already exist on the device -- keys, \
+                                 addresses, port and every peer -- so one can be edited here and applied \
+                                 back. Changes nothing on the device.",
+                            )
+                            .clicked();
+                        if clicked {
+                            let target = build_target(state);
+                            let device_type = state.device_type;
+                            state.start_import(target, device_type);
+                        }
+                    }
                 }
             }
             ui.add_space(6.0);

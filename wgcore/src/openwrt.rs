@@ -1,8 +1,15 @@
-//! Render an OpenWrt UCI shell script that recreates a host's WireGuard
-//! interface and peers, plus a preflight block that installs whatever
-//! packages are missing before touching UCI at all, using whichever
-//! package manager the router actually has (`opkg` on OpenWrt <= 23.05,
-//! `apk` on 24.10+).
+//! Render an OpenWrt UCI shell script that brings a host's WireGuard
+//! interface and peers to the described state, plus a preflight block that
+//! installs whatever packages are missing before touching UCI at all, using
+//! whichever package manager the router actually has (`opkg` on OpenWrt
+//! <= 23.05, `apk` on 24.10+).
+//!
+//! The script is safe to run against an interface that already exists: the
+//! interface section is updated in place (options this script doesn't manage
+//! are left alone), and its peer list is replaced wholesale -- so adding,
+//! removing or editing a peer here and re-running does exactly that on the
+//! router, whoever created the peer sections originally (this script, LuCI,
+//! or a hand-edited /etc/config/network).
 //!
 //! Paste the output into an SSH/terminal session on the router (or copy
 //! it over and run it as a shell script).
@@ -85,6 +92,15 @@ pub struct OpenWrtOptions {
     pub peer_tunnel_ids: HashMap<String, u32>,
     /// Peers whose id must not be renumbered on a local collision.
     pub pinned_tunnel_ids: HashSet<String>,
+    /// Public keys of peers that get `route_allowed_ips='0'` instead of the
+    /// usual `'1'` -- for a peer read back from a device that wasn't routing
+    /// it, where switching routing on (think AllowedIPs 0.0.0.0/0) could
+    /// hijack the router's default route.
+    pub no_route_peers: HashSet<String>,
+    /// Leave `/etc/config/firewall` alone entirely -- for an interface whose
+    /// firewall setup already exists on the device and isn't this script's
+    /// business.
+    pub skip_firewall: bool,
 }
 
 pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> String {
@@ -103,11 +119,11 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
     // Every `uci -q delete X` below is followed by `|| true`: `-q` only
     // silences the printed "Entry not found" error, it does NOT change the
     // exit code, so on a router where X doesn't exist yet (a first run, or
-    // just a fresh peer/zone) the bare command would still fail and, under
-    // `set -e` above, silently abort the whole script before anything
-    // useful happens. The delete-then-recreate pattern itself is still
-    // wanted -- it's what keeps a rerun idempotent instead of piling up
-    // duplicate `add_list` entries -- it just needs the `|| true` net so
+    // just an option that was never set) the bare command would still fail
+    // and, under `set -e` above, silently abort the whole script before
+    // anything useful happens. Deleting a list before re-adding to it is
+    // still wanted -- it's what keeps a rerun idempotent instead of piling
+    // up duplicate `add_list` entries -- it just needs the `|| true` net so
     // the very first run (nothing to delete yet) doesn't die on it.
 
     // -- Preflight: install whatever's missing ---------------------------
@@ -160,24 +176,26 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
 
     // -- Interface --------------------------------------------------------
     lines.push("# --- WireGuard interface ----------------------------------------------".to_string());
-    lines.push(format!("uci -q delete network.{iface} || true"));
+    // Updated in place rather than deleted and recreated, so an interface
+    // that already exists keeps whatever other options it has (metric,
+    // fwmark, ip6prefix, ...) and only the ones managed here change.
     lines.push(format!("uci set network.{iface}='interface'"));
     lines.push(format!("uci set network.{iface}.proto='wireguard'"));
     lines.push(format!(
         "uci set network.{iface}.private_key={}",
         uci_str(&host.private_key)
     ));
-    if let Some(port) = host.listen_port {
-        lines.push(format!("uci set network.{iface}.listen_port='{port}'"));
+    match host.listen_port {
+        Some(port) => lines.push(format!("uci set network.{iface}.listen_port='{port}'")),
+        None => lines.push(format!("uci -q delete network.{iface}.listen_port || true")),
     }
-    if let Some(mtu) = host.mtu {
-        lines.push(format!("uci set network.{iface}.mtu='{mtu}'"));
+    match host.mtu {
+        Some(mtu) => lines.push(format!("uci set network.{iface}.mtu='{mtu}'")),
+        None => lines.push(format!("uci -q delete network.{iface}.mtu || true")),
     }
-    if !host.address.is_empty() {
-        lines.push(format!("uci -q delete network.{iface}.addresses || true"));
-        for addr in &host.address {
-            lines.push(format!("uci add_list network.{iface}.addresses={}", uci_str(addr)));
-        }
+    lines.push(format!("uci -q delete network.{iface}.addresses || true"));
+    for addr in &host.address {
+        lines.push(format!("uci add_list network.{iface}.addresses={}", uci_str(addr)));
     }
     if !host.dns.is_empty() {
         lines.push(format!(
@@ -189,12 +207,26 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
     lines.push(String::new());
 
     // -- Peers --------------------------------------------------------------
-    if !host.peers.is_empty() {
-        lines.push("# --- Peers -------------------------------------------------------------".to_string());
+    // Every existing peer section of this interface goes first -- named or
+    // anonymous (LuCI creates anonymous ones), `@wireguard_<iface>[0]`
+    // matches either -- and the list below is then written fresh. That's
+    // what makes removing or renaming a peer here actually remove the old
+    // one on the router instead of leaving it behind. As a loop condition
+    // the failing final delete doesn't trip `set -e`.
+    lines.push("# --- Peers (replaces this interface's whole peer list) ------------------".to_string());
+    lines.push(format!("while uci -q delete network.@wireguard_{iface}[0]; do :; done"));
+    lines.push(String::new());
+    {
+        let mut used_sections: HashSet<String> = HashSet::new();
         for (i, peer) in host.peers.iter().enumerate() {
             let label = peer.comment.clone().unwrap_or_else(|| format!("peer{}", i + 1));
-            let section = uci_ident(&format!("{iface}_{label}"), &format!("{iface}_peer{}", i + 1));
-            lines.push(format!("uci -q delete network.{section} || true"));
+            let mut section = uci_ident(&format!("{iface}_{label}"), &format!("{iface}_peer{}", i + 1));
+            if !used_sections.insert(section.clone()) {
+                // Two peers with the same label would otherwise share one
+                // section, the second silently overwriting the first.
+                section = format!("{iface}_peer{}", i + 1);
+                used_sections.insert(section.clone());
+            }
             lines.push(format!("uci set network.{section}='wireguard_{iface}'"));
             lines.push(format!(
                 "uci set network.{section}.description={}",
@@ -210,13 +242,11 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
                     uci_str(psk)
                 ));
             }
-            if !peer.allowed_ips.is_empty() {
-                lines.push(format!("uci -q delete network.{section}.allowed_ips || true"));
-                for ip in &peer.allowed_ips {
-                    lines.push(format!("uci add_list network.{section}.allowed_ips={}", uci_str(ip)));
-                }
+            for ip in &peer.allowed_ips {
+                lines.push(format!("uci add_list network.{section}.allowed_ips={}", uci_str(ip)));
             }
-            lines.push(format!("uci set network.{section}.route_allowed_ips='1'"));
+            let route = if opts.no_route_peers.contains(&peer.public_key) { '0' } else { '1' };
+            lines.push(format!("uci set network.{section}.route_allowed_ips='{route}'"));
             if let Some(ep) = &peer.endpoint {
                 if let Some((ep_host, ep_port)) = ep.rsplit_once(':') {
                     if !ep_host.is_empty() {
@@ -314,40 +344,66 @@ pub fn host_to_openwrt_script(host: &WireGuardHost, opts: &OpenWrtOptions) -> St
     }
 
     // -- Firewall -------------------------------------------------------------
-    lines.push("# --- Firewall ------------------------------------------------------------".to_string());
-    lines.push(format!("uci -q delete firewall.{zone} || true"));
-    lines.push(format!("uci set firewall.{zone}='zone'"));
-    lines.push(format!("uci set firewall.{zone}.name={}", uci_str(&zone)));
-    lines.push(format!("uci add_list firewall.{zone}.network={}", uci_str(&iface)));
-    lines.push(format!("uci set firewall.{zone}.input='ACCEPT'"));
-    lines.push(format!("uci set firewall.{zone}.output='ACCEPT'"));
-    lines.push(format!("uci set firewall.{zone}.forward='REJECT'"));
-    lines.push(
-        "# NOTE: add a forwarding rule if this tunnel should reach another zone, e.g. 'lan':"
-            .to_string(),
-    );
-    lines.push("#   uci add firewall forwarding".to_string());
-    lines.push(format!("#   uci set firewall.@forwarding[-1].src='{zone}'"));
-    lines.push("#   uci set firewall.@forwarding[-1].dest='lan'".to_string());
-    if let Some(port) = host.listen_port {
-        let rule = uci_ident(&format!("{iface}_allow"), "wg_allow");
-        lines.push(format!("uci -q delete firewall.{rule} || true"));
-        lines.push(format!("uci set firewall.{rule}='rule'"));
+    if !opts.skip_firewall {
+        lines.push("# --- Firewall ------------------------------------------------------------".to_string());
+        // An interface that's already in some zone stays there untouched.
+        // Otherwise it joins the target zone, which is only created if it
+        // doesn't exist yet -- never deleted and rebuilt, since a second
+        // WireGuard interface applied later shares the same zone and must
+        // not knock the first one out of it.
+        lines.push("WG_ZONE=\"\"".to_string());
+        lines.push("for z in $(uci show firewall | sed -n 's/^firewall\\.\\([^.=]*\\)=zone$/\\1/p'); do".to_string());
+        lines.push("    for n in $(uci -q get \"firewall.$z.network\" || true); do".to_string());
+        lines.push(format!("        if [ \"$n\" = \"{iface}\" ]; then WG_ZONE=\"$z\"; fi"));
+        lines.push("    done".to_string());
+        lines.push("done".to_string());
+        lines.push("if [ -n \"$WG_ZONE\" ]; then".to_string());
         lines.push(format!(
-            "uci set firewall.{rule}.name={}",
-            uci_str(&format!("Allow WireGuard ({iface})"))
+            "    echo \"{iface} is already in firewall zone $(uci -q get \"firewall.$WG_ZONE.name\" || echo \"$WG_ZONE\") -- leaving zones as they are.\""
         ));
-        lines.push(format!("uci set firewall.{rule}.src='wan'"));
-        lines.push(format!("uci set firewall.{rule}.proto='udp'"));
-        lines.push(format!("uci set firewall.{rule}.dest_port='{port}'"));
-        lines.push(format!("uci set firewall.{rule}.target='ACCEPT'"));
+        lines.push("else".to_string());
+        lines.push(format!("    if ! uci -q get firewall.{zone} >/dev/null; then"));
+        lines.push(format!("        uci set firewall.{zone}='zone'"));
+        lines.push(format!("        uci set firewall.{zone}.name={}", uci_str(&zone)));
+        lines.push(format!("        uci set firewall.{zone}.input='ACCEPT'"));
+        lines.push(format!("        uci set firewall.{zone}.output='ACCEPT'"));
+        lines.push(format!("        uci set firewall.{zone}.forward='REJECT'"));
+        lines.push("    fi".to_string());
+        lines.push(format!("    uci add_list firewall.{zone}.network={}", uci_str(&iface)));
+        lines.push("fi".to_string());
+        lines.push(
+            "# NOTE: add a forwarding rule if this tunnel should reach another zone, e.g. 'lan':"
+                .to_string(),
+        );
+        lines.push("#   uci add firewall forwarding".to_string());
+        lines.push(format!("#   uci set firewall.@forwarding[-1].src='{zone}'"));
+        lines.push("#   uci set firewall.@forwarding[-1].dest='lan'".to_string());
+        let rule = uci_ident(&format!("{iface}_allow"), "wg_allow");
+        match host.listen_port {
+            Some(port) => {
+                lines.push(format!("uci set firewall.{rule}='rule'"));
+                lines.push(format!(
+                    "uci set firewall.{rule}.name={}",
+                    uci_str(&format!("Allow WireGuard ({iface})"))
+                ));
+                lines.push(format!("uci set firewall.{rule}.src='wan'"));
+                lines.push(format!("uci set firewall.{rule}.proto='udp'"));
+                lines.push(format!("uci set firewall.{rule}.dest_port='{port}'"));
+                lines.push(format!("uci set firewall.{rule}.target='ACCEPT'"));
+            }
+            None => lines.push(format!("uci -q delete firewall.{rule} || true")),
+        }
+        lines.push(String::new());
     }
-    lines.push(String::new());
 
     lines.push("uci commit network".to_string());
-    lines.push("uci commit firewall".to_string());
+    if !opts.skip_firewall {
+        lines.push("uci commit firewall".to_string());
+    }
     lines.push("/etc/init.d/network restart".to_string());
-    lines.push("/etc/init.d/firewall restart".to_string());
+    if !opts.skip_firewall {
+        lines.push("/etc/init.d/firewall restart".to_string());
+    }
     lines.push(String::new());
     lines.push(format!(
         "# Verify with: ubus call network.interface.{iface} status"
@@ -493,6 +549,37 @@ mod tests {
             }
         }
         assert!(saw_a_delete, "test setup should have exercised at least one delete line");
+    }
+
+    #[test]
+    fn rerun_replaces_the_peer_list_without_recreating_the_interface() {
+        let mut host = WireGuardHost::new("wg0", HostOptions { address: vec!["10.0.0.1/24".into()], ..Default::default() }).unwrap();
+        let routed = WireGuardHost::simple("a").unwrap().public_key;
+        let unrouted = WireGuardHost::simple("b").unwrap().public_key;
+        host.add_peer(Peer::build(routed, vec!["10.0.0.2/32".into()], None, None, None, Some("phone".into())).unwrap());
+        host.add_peer(Peer::build(unrouted.clone(), vec!["0.0.0.0/0".into()], None, None, None, Some("phone".into())).unwrap());
+
+        let mut opts = OpenWrtOptions { skip_firewall: true, ..Default::default() };
+        opts.no_route_peers.insert(unrouted);
+        let script = host_to_openwrt_script(&host, &opts);
+
+        assert!(!script.contains("uci -q delete network.wg0 "), "an existing interface must be edited in place, not dropped");
+        assert!(script.contains("while uci -q delete network.@wireguard_wg0[0]; do :; done"));
+        // Same label twice: the second peer must not overwrite the first.
+        assert!(script.contains("uci set network.wg0_phone='wireguard_wg0'"));
+        assert!(script.contains("uci set network.wg0_peer2='wireguard_wg0'"));
+        assert!(script.contains("uci set network.wg0_phone.route_allowed_ips='1'"));
+        assert!(script.contains("uci set network.wg0_peer2.route_allowed_ips='0'"));
+        assert!(!script.contains("uci set firewall.") && !script.contains("uci commit firewall"), "skip_firewall must leave /etc/config/firewall alone");
+    }
+
+    #[test]
+    fn firewall_zone_is_joined_not_rebuilt_so_several_interfaces_can_share_it() {
+        let host = WireGuardHost::new("wg1", HostOptions { address: vec!["10.1.0.1/24".into()], listen_port: Some(51821), ..Default::default() }).unwrap();
+        let script = host_to_openwrt_script(&host, &OpenWrtOptions::default());
+        assert!(!script.contains("uci -q delete firewall.wireguard"));
+        assert!(script.contains("    uci add_list firewall.wireguard.network='wg1'"));
+        assert!(script.contains("uci set firewall.wg1_allow.dest_port='51821'"));
     }
 
     #[test]

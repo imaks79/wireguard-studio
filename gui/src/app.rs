@@ -290,6 +290,23 @@ impl WgStudioApp {
                     self.log_action(format!("Removed client '{client_name}' from host '{host_name}'"));
                 }
             }
+            let mut import_errors = Vec::new();
+            for (iface, deploy) in out.imported_hosts {
+                self.host_counter += 1;
+                let mut host = HostTabState::new(self.host_counter, &iface.name);
+                match host.load_from_device(&iface) {
+                    Ok(_) => {
+                        host.deploy = deploy;
+                        self.log_action(format!("Copied interface '{}' from {}", iface.name, host.deploy.target_description()));
+                        self.hosts.push(host);
+                        self.selected_host = self.hosts.len() - 1;
+                    }
+                    Err(e) => import_errors.push(e),
+                }
+            }
+            if !import_errors.is_empty() {
+                self.error("Copy from device failed", import_errors.join("\n"));
+            }
             if out.close_requested {
                 if confirm_close {
                     self.confirm = Some((

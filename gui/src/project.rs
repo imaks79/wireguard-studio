@@ -62,8 +62,41 @@ pub struct HostProjectDict {
     /// Absent in projects saved before this option existed.
     #[serde(default)]
     pub deploy: DeployProjectDict,
+    /// The interface's name on the device this host is applied to, when
+    /// it's not simply derived from `name`. Absent in projects saved before
+    /// this option existed.
+    #[serde(default)]
+    pub device_interface: Option<String>,
+    /// Whether RouterOS/OpenWrt applies leave the device's firewall alone.
+    /// Stored negated so projects saved before this option existed keep
+    /// managing it, as they always did.
+    #[serde(default)]
+    pub skip_firewall: bool,
+    /// Peers known only by their public key (copied from a device or
+    /// loaded from a `.conf`), which have no client tab of their own.
+    /// Absent in projects saved before this option existed.
+    #[serde(default)]
+    pub extra_peers: Vec<ExtraPeerDict>,
     #[serde(default)]
     pub clients: Vec<ClientProjectDict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtraPeerDict {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub public_key: String,
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub persistent_keepalive: Option<u32>,
+    #[serde(default)]
+    pub preshared_key: Option<String>,
+    #[serde(default)]
+    pub route: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

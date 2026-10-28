@@ -349,7 +349,7 @@ impl ClientTabState {
             });
 
             let client_name = self.name.clone();
-            match deploy::render_apply_dialog(ui.ctx(), &mut self.deploy, &client_name) {
+            match deploy::render_apply_dialog(ui.ctx(), &mut self.deploy, &client_name, false) {
                 deploy::DialogAction::None => {}
                 deploy::DialogAction::PlainExport { label } => match self.sync(ctx.host_pubkey, ctx.host_name, ctx.mesh_peers) {
                     Ok(synced) => {

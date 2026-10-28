@@ -6,7 +6,7 @@ use wgcore::{
 use crate::client_tab::ClientTabState;
 use crate::deploy::DeployState;
 use crate::modal::Modal;
-use crate::project::HostProjectDict;
+use crate::project::{ExtraPeerDict, HostProjectDict};
 use crate::util::{parse_u32, resolve_listen_port, split_csv, split_lines};
 
 /// Which sub-tab of a host is currently visible: its own Host Settings
@@ -88,6 +88,64 @@ pub fn collect_client_mesh_peers(clients: &[ClientTabState], self_idx: usize) ->
         .collect()
 }
 
+/// A peer of this host known only by its public half -- copied from a
+/// device or loaded from a `.conf` -- so it has no client tab (there's no
+/// private key to build that client's own config from). Edited as a row of
+/// the host's "Other peers" table; every field is the raw form text.
+#[derive(Clone, Default)]
+pub struct ExtraPeer {
+    pub name: String,
+    pub public_key: String,
+    pub allowed_ips: String,
+    pub endpoint: String,
+    pub keepalive: String,
+    pub psk: String,
+    /// Whether the device should route this peer's Allowed IPs through the
+    /// tunnel (OpenWrt `route_allowed_ips`, a RouterOS `/ip/route` entry).
+    pub route: bool,
+}
+
+impl ExtraPeer {
+    fn from_peer(peer: &wgcore::Peer, route: bool) -> Self {
+        ExtraPeer {
+            name: peer.comment.clone().unwrap_or_default(),
+            public_key: peer.public_key.clone(),
+            allowed_ips: peer.allowed_ips.join(", "),
+            endpoint: peer.endpoint.clone().unwrap_or_default(),
+            keepalive: peer.persistent_keepalive.map(|ka| ka.to_string()).unwrap_or_default(),
+            psk: peer.preshared_key.clone().unwrap_or_default(),
+            route,
+        }
+    }
+
+    fn from_imported(peer: &wgcore::ImportedPeer) -> Self {
+        ExtraPeer {
+            name: peer.name.clone(),
+            public_key: peer.public_key.clone(),
+            allowed_ips: peer.allowed_ips.join(", "),
+            endpoint: peer.endpoint.clone().unwrap_or_default(),
+            keepalive: peer.persistent_keepalive.map(|ka| ka.to_string()).unwrap_or_default(),
+            psk: peer.preshared_key.clone().unwrap_or_default(),
+            route: peer.route_allowed_ips,
+        }
+    }
+
+    fn to_peer(&self, position: usize) -> Result<wgcore::Peer, String> {
+        let label = if self.name.trim().is_empty() { format!("#{position}") } else { format!("'{}'", self.name.trim()) };
+        let non_empty = |text: &str| Some(text.trim().to_string()).filter(|t| !t.is_empty());
+        let keepalive = parse_u32(&self.keepalive, "Keepalive").map_err(|e| format!("Other peer {label}: {e}"))?;
+        wgcore::Peer::build(
+            self.public_key.trim().to_string(),
+            split_csv(&self.allowed_ips),
+            non_empty(&self.endpoint),
+            keepalive.filter(|ka| *ka > 0),
+            non_empty(&self.psk),
+            non_empty(&self.name),
+        )
+        .map_err(|e| format!("Other peer {label}: {e}"))
+    }
+}
+
 /// One WireGuard interface, with a nested set of client tabs. Rust port
 /// of Tkinter's `HostTab`, minus the widget plumbing.
 pub struct HostTabState {
@@ -134,14 +192,19 @@ pub struct HostTabState {
     pub selected: HostSubTab,
     client_counter: u32,
 
-    /// Peers that came from `load_from_config()` (a raw `.conf` loaded
-    /// via "Load Configuration...") but have no corresponding client tab.
-    /// Mirrors the Python original: `HostTab.sync_to_model()` starts from
-    /// `old_peers = list(self.host.peers)`, so any peer never claimed by a
-    /// client tab rides along through every rebuild. Not part of the
-    /// project-file schema, matching `host_to_dict()`'s omission of peers
-    /// there too -- these only survive for the current session.
-    loaded_peers: Vec<wgcore::Peer>,
+    /// The interface's name on the device this host is applied to (the
+    /// UCI section on OpenWrt, the interface name on RouterOS). Blank means
+    /// "derive it from `name`". Filled in by "Copy Interface from Device"
+    /// so applying back lands on that same interface.
+    pub device_interface: String,
+    /// Whether applying to RouterOS/OpenWrt also sets up firewall rules for
+    /// the tunnel. Switched off for an interface copied from a device,
+    /// whose firewall is already whatever its owner made it.
+    pub manage_firewall: bool,
+    /// Peers with no client tab of their own: copied from a device, loaded
+    /// from a raw `.conf` via "Load Configuration...", or added by hand.
+    /// They ride along through every rebuild, after the client tabs' peers.
+    pub extra_peers: Vec<ExtraPeer>,
 
     pool_cidr: Option<String>,
     pool: Option<IpAddressPool>,
@@ -177,7 +240,9 @@ impl HostTabState {
             clients: Vec::new(),
             selected: HostSubTab::Settings,
             client_counter: 0,
-            loaded_peers: Vec::new(),
+            device_interface: String::new(),
+            manage_firewall: true,
+            extra_peers: Vec::new(),
             pool_cidr: None,
             pool: None,
         }
@@ -422,10 +487,59 @@ impl HostTabState {
             let synced = client.sync(&host_pubkey, &host_name, mesh_peers)?;
             host.add_peer(synced.host_peer);
         }
-        for peer in &self.loaded_peers {
-            host.add_peer(peer.clone());
+        for (i, extra) in self.extra_peers.iter().enumerate() {
+            let peer = extra.to_peer(i + 1)?;
+            if host.peers.iter().any(|p| p.public_key == peer.public_key) {
+                return Err(format!(
+                    "Public key {} is used by more than one peer of this host -- remove the duplicate \
+                     (a client tab and an \"Other peers\" row, or two rows).",
+                    peer.public_key
+                ));
+            }
+            host.add_peer(peer);
         }
         Ok(host)
+    }
+
+    /// Public keys of the "Other peers" rows the device shouldn't route.
+    pub fn unrouted_peer_keys(&self) -> std::collections::HashSet<String> {
+        self.extra_peers.iter().filter(|p| !p.route).map(|p| p.public_key.trim().to_string()).collect()
+    }
+
+    /// The explicit device-side interface name, if one is set.
+    pub fn device_interface_name(&self) -> Option<String> {
+        Some(self.device_interface.trim().to_string()).filter(|n| !n.is_empty())
+    }
+
+    /// Replace this host's own settings with an interface read from a
+    /// device ("Copy Interface from Device"). Its peers become "Other
+    /// peers" rows -- except ones whose public key already belongs to one
+    /// of this host's client tabs, which stay represented by that tab.
+    /// Returns (peers added as rows, peers matched to a client tab).
+    pub fn load_from_device(&mut self, iface: &wgcore::ImportedInterface) -> Result<(usize, usize), String> {
+        let private_key = wgcore::validate_key(iface.private_key.trim(), "private key")
+            .map_err(|e| format!("Interface '{}': could not read a usable private key from the device ({e}).", iface.name))?;
+        self.name = iface.name.clone();
+        self.device_interface = iface.name.clone();
+        self.private_key = private_key;
+        self.manual_key = true;
+        self.refresh_public_key();
+        self.address = iface.address.join(", ");
+        self.listen_port = iface.listen_port.map(|p| p.to_string()).unwrap_or_default();
+        self.mtu = iface.mtu.map(|m| m.to_string()).unwrap_or_default();
+        self.manage_firewall = false;
+        self.extra_peers.clear();
+        let mut matched = 0;
+        for peer in &iface.peers {
+            if self.clients.iter().any(|c| c.public_key.trim() == peer.public_key) {
+                matched += 1;
+            } else {
+                self.extra_peers.push(ExtraPeer::from_imported(peer));
+            }
+        }
+        self.refresh_advanced_lock();
+        self.selected = HostSubTab::Settings;
+        Ok((self.extra_peers.len(), matched))
     }
 
     pub fn load_from_config(&mut self, text: &str, name: &str) -> Result<usize, String> {
@@ -433,10 +547,10 @@ impl HostTabState {
         let peer_count = host.peers.len();
         // The loaded peers have no client tab of their own (this only
         // replaces the host's own [Interface] fields, the same way the
-        // Python original's `load_configuration()` does), so stash them
-        // to ride along through every future rebuild -- see
-        // `loaded_peers`'s doc comment.
-        self.loaded_peers = host.peers.clone();
+        // Python original's `load_configuration()` does), so they become
+        // "Other peers" rows -- see `extra_peers`'s doc comment. Routed, as
+        // a peer of a plain wg-quick config always is.
+        self.extra_peers = host.peers.iter().map(|p| ExtraPeer::from_peer(p, true)).collect();
         self.name = host.name.clone();
         self.private_key = host.private_key.clone();
         self.public_key = host.public_key.clone();
@@ -478,6 +592,21 @@ impl HostTabState {
             mesh_eoip: self.mesh_eoip,
             host_eoip: self.host_eoip,
             deploy: self.deploy.to_project_dict(),
+            device_interface: self.device_interface_name(),
+            skip_firewall: !self.manage_firewall,
+            extra_peers: self
+                .extra_peers
+                .iter()
+                .map(|p| ExtraPeerDict {
+                    name: p.name.clone(),
+                    public_key: p.public_key.trim().to_string(),
+                    allowed_ips: split_csv(&p.allowed_ips),
+                    endpoint: Some(p.endpoint.trim().to_string()).filter(|e| !e.is_empty()),
+                    persistent_keepalive: p.keepalive.trim().parse().ok(),
+                    preshared_key: Some(p.psk.trim().to_string()).filter(|k| !k.is_empty()),
+                    route: p.route,
+                })
+                .collect(),
             clients: self.clients.iter().map(ClientTabState::to_project_dict).collect(),
         }
     }
@@ -511,6 +640,21 @@ impl HostTabState {
         s.mesh_eoip = d.mesh_eoip;
         s.host_eoip = d.host_eoip;
         s.deploy = DeployState::from_project_dict(&d.deploy);
+        s.device_interface = d.device_interface.clone().unwrap_or_default();
+        s.manage_firewall = !d.skip_firewall;
+        s.extra_peers = d
+            .extra_peers
+            .iter()
+            .map(|p| ExtraPeer {
+                name: p.name.clone(),
+                public_key: p.public_key.clone(),
+                allowed_ips: p.allowed_ips.join(", "),
+                endpoint: p.endpoint.clone().unwrap_or_default(),
+                keepalive: p.persistent_keepalive.map(|ka| ka.to_string()).unwrap_or_default(),
+                psk: p.preshared_key.clone().unwrap_or_default(),
+                route: p.route,
+            })
+            .collect();
         s.refresh_advanced_lock();
 
         for (i, cd) in d.clients.iter().enumerate() {
@@ -598,6 +742,67 @@ mod tests {
         // The host's own [Peer] table is unaffected by peer-to-peer mesh --
         // still exactly one entry per client, same as with mesh off.
         assert_eq!(built.peers.len(), 2);
+    }
+
+    fn imported_interface(client_key: &str) -> wgcore::ImportedInterface {
+        let peer = |name: &str, public_key: String, route: bool| wgcore::ImportedPeer {
+            name: name.to_string(),
+            public_key,
+            allowed_ips: vec!["0.0.0.0/0".to_string()],
+            endpoint: Some("203.0.113.9:51820".to_string()),
+            persistent_keepalive: Some(25),
+            preshared_key: None,
+            route_allowed_ips: route,
+        };
+        wgcore::ImportedInterface {
+            name: "wg0".to_string(),
+            private_key: generate_private_key(),
+            address: vec!["10.0.0.1/24".to_string()],
+            listen_port: Some(51820),
+            mtu: None,
+            peers: vec![
+                peer("uplink", WireGuardHost::simple("x").unwrap().public_key, false),
+                peer("known client", client_key.to_string(), true),
+            ],
+        }
+    }
+
+    #[test]
+    fn load_from_device_keeps_client_tabs_and_turns_the_rest_into_other_peers() {
+        let mut host = HostTabState::new(1, "host-1");
+        host.address = "10.0.0.1/24".to_string();
+        host.new_client_tab(None);
+        let iface = imported_interface(&host.clients[0].public_key.clone());
+
+        assert_eq!(host.load_from_device(&iface).unwrap(), (1, 1));
+        assert_eq!(host.name, "wg0");
+        assert_eq!(host.device_interface, "wg0");
+        assert_eq!(host.private_key, iface.private_key);
+        assert!(!host.manage_firewall, "a copied interface's firewall is left to its owner");
+        assert_eq!(host.unrouted_peer_keys().len(), 1);
+
+        // One peer per client tab plus the imported row, each key once.
+        let built = host.build_full_model().unwrap();
+        assert_eq!(built.peers.len(), 2);
+        assert_eq!(built.peers[1].comment.as_deref(), Some("uplink"));
+        assert_eq!(built.peers[1].endpoint.as_deref(), Some("203.0.113.9:51820"));
+
+        // ...and it all survives a project save/load.
+        let reloaded = HostTabState::from_project_dict(2, &host.to_project_dict());
+        assert_eq!(reloaded.device_interface, "wg0");
+        assert!(!reloaded.manage_firewall);
+        assert_eq!(reloaded.extra_peers.len(), 1);
+        assert_eq!(reloaded.extra_peers[0].allowed_ips, "0.0.0.0/0");
+        assert!(!reloaded.extra_peers[0].route);
+    }
+
+    #[test]
+    fn a_public_key_shared_by_two_peers_is_rejected() {
+        let mut host = HostTabState::new(1, "host-1");
+        host.address = "10.0.0.1/24".to_string();
+        host.new_client_tab(None);
+        host.extra_peers.push(ExtraPeer { public_key: host.clients[0].public_key.clone(), ..Default::default() });
+        assert!(host.build_full_model().unwrap_err().contains("more than one peer"));
     }
 
     #[test]

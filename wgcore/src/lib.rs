@@ -21,6 +21,7 @@
 mod dict;
 mod error;
 mod host;
+mod import;
 mod keys;
 mod network;
 mod openwrt;
@@ -33,6 +34,7 @@ mod routeros;
 pub use dict::{host_from_dict, host_to_dict, HostDict};
 pub use error::{Result, WgError};
 pub use host::{set_owner_only_permissions, HostOptions, WireGuardHost};
+pub use import::{parse_openwrt_network, parse_routeros_dump, ImportedInterface, ImportedPeer, ROUTEROS_DUMP_COMMANDS};
 pub use keys::{address_lists_overlap, generate_preshared_key, generate_private_key, public_key_from_private, validate_key};
 pub use network::WireGuardNetwork;
 pub use openwrt::{host_to_openwrt_script, OpenWrtOptions};
