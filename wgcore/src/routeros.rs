@@ -309,13 +309,11 @@ pub fn host_to_routeros_script(host: &WireGuardHost, opts: &RouterOsOptions) -> 
                 routeros_interface_name(peer.comment.as_deref().unwrap_or("peer"), "peer")
             );
             eoip_lines.push(format!("remove [find name={}]", routeros_str(&eoip_name)));
-            let cmd = vec![
-                format!("add name={}", routeros_str(&eoip_name)),
+            let cmd = [format!("add name={}", routeros_str(&eoip_name)),
                 format!("remote-address={}", routeros_str(&remote_ip)),
                 format!("local-address={}", routeros_str(&local_ip)),
                 format!("tunnel-id={tunnel_id}"),
-                format!("comment={}", routeros_str(&format!("EoIP to {label}, over WireGuard"))),
-            ];
+                format!("comment={}", routeros_str(&format!("EoIP to {label}, over WireGuard")))];
             eoip_lines.push(cmd.join(" "));
         }
 

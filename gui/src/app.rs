@@ -197,15 +197,14 @@ impl WgStudioApp {
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::FG_HEADER, egui::RichText::new("WireGuard Config Studio").size(16.0).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::danger_button(ui, "Reset Project").clicked() {
-                            if !self.hosts.is_empty() {
+                        if theme::danger_button(ui, "Reset Project").clicked()
+                            && !self.hosts.is_empty() {
                                 self.confirm = Some((
                                     "Reset project".into(),
                                     "This will remove every host and client tab and can't be undone. Reset the project?".into(),
                                     PendingConfirm::ResetProject,
                                 ));
                             }
-                        }
                         if ui.button("Save Entire Project...").clicked() {
                             self.save_project();
                         }

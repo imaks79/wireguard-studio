@@ -210,11 +210,10 @@ impl ClientTabState {
                 self.address = addr;
             }
         }
-        if force || self.dns.trim().is_empty() {
-            if !host_dns.is_empty() {
+        if (force || self.dns.trim().is_empty())
+            && !host_dns.is_empty() {
                 self.dns = host_dns.join(", ");
             }
-        }
         if force || self.mtu.trim().is_empty() {
             if let Some(m) = host_mtu {
                 self.mtu = m.to_string();

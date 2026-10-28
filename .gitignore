@@ -15,3 +15,5 @@ Thumbs.db
 # keep them in a clearly-labeled directory (e.g. `examples/fixtures/`) and
 # double-check every key in them is a throwaway, not one you actually use.
 /wireguard-configs/
+
+/dist/
